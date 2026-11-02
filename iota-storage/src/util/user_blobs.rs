@@ -74,7 +74,7 @@ pub fn put(
     user_id: i64,
     blob_id: &str,
     blob: &[u8],
-    _expected_revision: Option<i64>,
+    expected_revision: Option<i64>,
 ) -> Result<UserBlob, StorageError> {
     validate(user_id, blob_id, Some(blob))?;
     db::with_immediate_transaction(|tx| {
@@ -92,6 +92,12 @@ pub fn put(
                 },
             )
             .optional()?;
+        let current_revision = existing
+            .filter(|(_, _, deleted, _)| !*deleted)
+            .map_or(0, |(_, revision, _, _)| revision);
+        if expected_revision.is_some_and(|expected| expected != current_revision) {
+            return Err(StorageError::RevisionConflict);
+        }
         let existing_id = existing.map(|(id, _, _, _)| id);
         let current_size = existing
             .filter(|(_, _, deleted, _)| !*deleted)
@@ -269,7 +275,7 @@ fn list_by_query(user_id: i64, query: &str, _: &[i64]) -> Result<Vec<UserBlob>, 
 pub fn delete(
     user_id: i64,
     blob_id: &str,
-    _expected_revision: Option<i64>,
+    expected_revision: Option<i64>,
 ) -> Result<Option<DeletedUserBlob>, StorageError> {
     validate(user_id, blob_id, None)?;
     db::with_immediate_transaction(|tx| {
@@ -286,6 +292,12 @@ pub fn delete(
                 },
             )
             .optional()?;
+        let current_revision = existing
+            .filter(|(_, _, deleted)| !*deleted)
+            .map_or(0, |(_, revision, _)| revision);
+        if expected_revision.is_some_and(|expected| expected != current_revision) {
+            return Err(StorageError::RevisionConflict);
+        }
         let Some((id, current, deleted)) = existing else {
             return Ok(None);
         };

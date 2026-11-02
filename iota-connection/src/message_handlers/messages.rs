@@ -252,7 +252,8 @@ pub fn handle_messages_get(cv: &CommunicationValue) -> CommunicationValue {
     let Some(offset) = data_i64(cv, DataType::Offset).filter(|offset| *offset >= 0) else {
         return error_response(cv, CommunicationType::ErrorInvalidData);
     };
-    let Some(amount) = data_i64(cv, DataType::Amount).filter(|amount| *amount > 0) else {
+    let Some(amount) = data_i64(cv, DataType::Amount).filter(|amount| (1..=128).contains(amount))
+    else {
         return error_response(cv, CommunicationType::ErrorInvalidData);
     };
     match chats_util::get_user_by_principal(my_id_i64, iota_identity::PrincipalHandle(partner_id)) {

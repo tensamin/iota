@@ -146,6 +146,13 @@ pub async fn handle_user_resolve(
     if let Some(username) = &resolved.username {
         response = response.add_typed_default(DataType::Username, DataValue::Str(username.clone()));
     }
+    match iota_storage::identity::SqlitePrincipalStore.resolved_display_name(&resolved) {
+        Ok(Some(display)) => {
+            response = response.add_typed_default(DataType::Display, DataValue::Str(display));
+        }
+        Ok(None) => {}
+        Err(error) => return identity_resolve_error(cv, &error),
+    }
     response
 }
 

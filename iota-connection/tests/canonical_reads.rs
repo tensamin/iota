@@ -231,6 +231,80 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
             Some(alias as u128)
         );
     }
+    for amount in [-1, 0, 129, i64::MAX] {
+        let response = handle_messages_get(
+            &request(C::MessagesGet)
+                .add_typed_default(D::UserId, DataValue::SignedNumber(handles[1].0.into()))
+                .add_typed_default(D::Offset, DataValue::SignedNumber(0))
+                .add_typed_default(D::Amount, DataValue::SignedNumber(amount.into())),
+        );
+        assert!(response.is_type(C::ErrorInvalidData), "{response:?}");
+    }
+    let oversized_offset = handle_messages_get(
+        &request(C::MessagesGet)
+            .add_typed_default(D::UserId, DataValue::SignedNumber(handles[1].0.into()))
+            .add_typed_default(D::Offset, DataValue::SignedNumber(i64::MAX.into()))
+            .add_typed_default(D::Amount, DataValue::SignedNumber(128)),
+    );
+    assert!(oversized_offset.is_type(C::MessagesGet));
+    assert!(
+        oversized_offset
+            .get_data(D::Messages)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let all = iota_storage::util::chat_files::get_all_messages(1).unwrap();
+    let selected = all[0].id;
+    let unrelated = all[1].id;
+    // A keyed read must not decode unrelated rows, even for the same owner.
+    db::with_db(|conn| {
+        conn.execute(
+            "UPDATE messages SET content = x'ff' WHERE id = ?1",
+            [unrelated],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let keyed =
+        iota_storage::util::chat_files::get_messages_by_ids(1, &[selected, selected, i64::MAX])
+            .unwrap();
+    assert_eq!(keyed.len(), 1);
+    assert_eq!(keyed[0].id, selected);
+    assert_eq!(keyed[0].reactions.len(), all[0].reactions.len());
+    assert!(
+        iota_storage::util::chat_files::get_messages_by_ids(2, &[selected])
+            .unwrap()
+            .is_empty()
+    );
+    db::with_db(|conn| {
+        conn.execute(
+            "UPDATE messages SET content = ?1 WHERE id = ?2",
+            rusqlite::params![all[1].content, unrelated],
+        )?;
+        conn.execute(
+            "UPDATE messages SET history_deleted = 1 WHERE id = ?1",
+            [selected],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        iota_storage::util::chat_files::get_messages_by_ids(1, &[selected])
+            .unwrap()
+            .is_empty()
+    );
+    db::with_db(|conn| {
+        conn.execute(
+            "UPDATE messages SET history_deleted = 0 WHERE id = ?1",
+            [selected],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
     // Self-authored rows use the canonical owner even if the peer alias is also 1.
     db::with_db(|conn| {
         conn.execute(
