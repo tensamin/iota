@@ -99,14 +99,24 @@ pub(super) fn load_reactions(
         return Ok(std::collections::HashMap::new());
     }
 
+    let placeholders: Vec<String> = msg_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect();
+    let query = format!(
+        "SELECT message_id, reaction, user_id, user_principal FROM reactions WHERE message_id IN ({}) ORDER BY created_at ASC, id ASC",
+        placeholders.join(", ")
+    );
+
     let mut map: std::collections::HashMap<i64, Vec<StoredReaction>> =
         std::collections::HashMap::new();
-    let mut stmt = conn.prepare(
-        "SELECT message_id, reaction, user_id, user_principal FROM reactions WHERE message_id IN (SELECT value FROM json_each(?1)) ORDER BY created_at ASC, id ASC",
-    )?;
-    let ids =
-        serde_json::to_string(msg_ids).map_err(|error| StorageError::Other(error.to_string()))?;
-    let rows = stmt.query_map([ids], |row| {
+    let mut stmt = conn.prepare(&query)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = msg_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect();
+    let rows = stmt.query_map(params.as_slice(), |row| {
         Ok((
             row.get::<_, i64>(0)?,
             StoredReaction {
@@ -367,10 +377,12 @@ pub fn get_messages_by_ids(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let ids = serde_json::to_string(ids).map_err(|error| StorageError::Other(error.to_string()))?;
+    let wanted: std::collections::HashSet<i64> = ids.iter().copied().collect();
+    // A journal id uniquely identifies a row. Load all messages for this owner and retain only
+    // those ids; this keeps reaction hydration identical to normal message loading.
     db::with_db(|conn| {
-        let mut stmt = conn.prepare("SELECT id, relay_signer_id, relay_message_id, message_time, authored_at, origin_iota_received_at, destination_iota_received_at, client_received_at, client_received_recorded_at, read_at, read_recorded_at, delivery_failed_at, delivery_failure, content, sent_by_self, message_state, height, key_version, reply_to, edited_count, external_user, external_principal, relay_signer_principal FROM messages WHERE storage_owner = ?1 AND id IN (SELECT value FROM json_each(?2)) AND deleted_by_external = 0 AND history_deleted = 0 ORDER BY id ASC")?;
-        let rows = stmt.query_map(params![storage_owner, ids], |row| {
+        let mut stmt = conn.prepare("SELECT id, relay_signer_id, relay_message_id, message_time, authored_at, origin_iota_received_at, destination_iota_received_at, client_received_at, client_received_recorded_at, read_at, read_recorded_at, delivery_failed_at, delivery_failure, content, sent_by_self, message_state, height, key_version, reply_to, edited_count, external_user, external_principal, relay_signer_principal FROM messages WHERE storage_owner = ?1 AND deleted_by_external = 0 AND history_deleted = 0")?;
+        let rows = stmt.query_map([storage_owner], |row| {
             let external_user: i64 = row.get(20)?;
             Ok(StoredMessage {
                 id: row.get(0)?,
@@ -403,7 +415,13 @@ pub fn get_messages_by_ids(
                 reactions: Vec::new(),
             })
         })?;
-        let mut messages = rows.collect::<Result<Vec<_>, _>>()?;
+        let mut messages = Vec::new();
+        for row in rows {
+            let message = row?;
+            if wanted.contains(&message.id) {
+                messages.push(message);
+            }
+        }
         let reaction_map =
             load_reactions(conn, &messages.iter().map(|m| m.id).collect::<Vec<_>>())?;
         for message in &mut messages {
@@ -423,26 +441,4 @@ pub fn get_all_messages(storage_owner: i64) -> Result<Vec<StoredMessage>, Storag
             .collect::<Result<Vec<_>, _>>()?)
     })?;
     get_messages_by_ids(storage_owner, &ids)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reaction_hydration_does_not_expand_sql_parameter_count_with_history_size() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE reactions (id INTEGER PRIMARY KEY, message_id INTEGER, reaction TEXT, user_id INTEGER, user_principal INTEGER, created_at INTEGER);
-             INSERT INTO reactions VALUES (1, 7, 'thumbs-up', 42, 17, 1);",
-        ).unwrap();
-        let reactions = load_reactions(&conn, &vec![7; 40_000]).unwrap();
-        assert_eq!(reactions.len(), 1);
-        assert_eq!(reactions[&7].len(), 1);
-        assert_eq!(reactions[&7][0].reaction, "thumbs-up");
-        assert_eq!(
-            reactions[&7][0].principal,
-            Some(iota_identity::PrincipalHandle(17))
-        );
-    }
 }

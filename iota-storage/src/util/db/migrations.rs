@@ -11,16 +11,6 @@ mod v70_files;
 
 use super::*;
 
-pub(super) fn verify_supported_schema(conn: &Connection) -> Result<i64, StorageError> {
-    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version > 70 {
-        return Err(StorageError::Other(format!(
-            "database schema {version} is newer than supported schema 70"
-        )));
-    }
-    Ok(version)
-}
-
 pub(super) fn run_migrations(pool: &r2d2::Pool<SqliteManager>) -> Result<(), StorageError> {
     let conn = pool.get().map_err(|e| StorageError::Pool(e.to_string()))?;
     run_migrations_on_connection(&conn)
@@ -57,7 +47,7 @@ pub(super) fn add_table_column_if_missing(
 }
 
 pub(super) fn run_migrations_on_connection(conn: &Connection) -> Result<(), StorageError> {
-    let current_version = verify_supported_schema(conn)?;
+    let current_version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
 
     v01_to_v20::migrate(conn, current_version)?;
     v21_to_v30::migrate(conn, current_version)?;

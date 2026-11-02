@@ -11,41 +11,25 @@ const MAX_ITEMS: i64 = 100_000;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 const ITEM_BYTES: usize = 256 * 1024;
 
-pub(crate) fn prepare_transaction_capture(connection: &Connection) -> Result<(), StorageError> {
-    connection.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS transaction_sync_events (
-            user_id INTEGER NOT NULL, version INTEGER NOT NULL,
-            PRIMARY KEY(user_id, version)
-         );
-         CREATE TEMP TRIGGER IF NOT EXISTS capture_transaction_sync_events
-         AFTER INSERT ON main.sync_events BEGIN
-            INSERT OR IGNORE INTO transaction_sync_events VALUES (NEW.user_id, NEW.version);
-         END;",
-    )?;
-    Ok(())
+pub(crate) fn transaction_heads(tx: &Transaction<'_>) -> Result<BTreeMap<i64, i64>, StorageError> {
+    tx.prepare("SELECT user_id,version FROM sync_heads")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()
+        .map_err(Into::into)
 }
 
 /// Freeze post-transaction projections before the transaction can establish
 /// acceptance. Multiple changes to one row in a transaction share its final
 /// projection. No intermediate state was observable outside that transaction.
-pub(crate) fn capture_transaction_events(tx: &Transaction<'_>) -> Result<(), StorageError> {
-    let mut touched = BTreeMap::<i64, Vec<(i64, String, i64)>>::new();
-    let mut statement = tx.prepare(
-        "SELECT s.user_id,s.version,s.entity_type,s.entity_id FROM transaction_sync_events t
-         JOIN sync_events s ON s.user_id=t.user_id AND s.version=t.version
-         ORDER BY s.user_id,s.version",
-    )?;
-    for row in statement.query_map([], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-    })? {
-        let (owner, version, entity, key) = row?;
-        touched
-            .entry(owner)
-            .or_default()
-            .push((version, entity, key));
-    }
-    drop(statement);
-    for (owner, events) in touched {
+pub(crate) fn capture_transaction_events(
+    tx: &Transaction<'_>,
+    before: &BTreeMap<i64, i64>,
+) -> Result<(), StorageError> {
+    for (owner, head) in transaction_heads(tx)? {
+        let after = before.get(&owner).copied().unwrap_or(0);
+        if head <= after {
+            continue;
+        }
         let identity: Option<(String,i64,i64)> = tx.query_row(
             "SELECT p.authority_id,p.remote_user_id,a.generation FROM hosted_principals h
              JOIN principals p ON p.principal_pk=h.principal_handle JOIN hosted_auth_state a ON a.local_user_id=h.local_user_id
@@ -62,6 +46,16 @@ pub(crate) fn capture_transaction_events(tx: &Transaction<'_>) -> Result<(), Sto
         };
         let canonical = String::from_utf8(serialize(&principal)?)
             .map_err(|error| StorageError::Other(error.to_string()))?;
+        let mut statement = tx.prepare("SELECT version,entity_type,entity_id FROM sync_events WHERE user_id=?1 AND version>?2 ORDER BY version")?;
+        let events = statement
+            .query_map(params![owner, after], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         for (sequence, entity, key) in events {
             let operation: String = tx.query_row("SELECT operation FROM sync_events WHERE user_id=?1 AND entity_type=?2 AND entity_id=?3 ORDER BY version DESC LIMIT 1",
                 params![owner,entity,key], |row| row.get(0))?;
@@ -673,7 +667,7 @@ fn columns(entity: &str) -> &'static str {
             "id,principal_handle,user_name,created_at,last_message_at,notifications,notifications_read_at"
         }
         "setting" => "id,scope_type,scope_key,name,payload,revision,deleted",
-        "user_blob" => "id,blob_id,length(blob) AS size,revision,deleted,updated_at",
+        "user_blob" => "id,blob_id,blob,revision,deleted,updated_at",
         "chat_secret" => "chat_id,secret_id,version,wrapping_scheme,created_at,updated_at",
         "blocked_user" => "id,blocked_principal,revision,created_at",
         "receipt_policy" => "user_id,send_read_receipts,send_received_receipts,revision,updated_at",

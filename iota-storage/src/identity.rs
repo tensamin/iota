@@ -154,22 +154,6 @@ fn local_descriptor(user: crate::users::user_profile::UserProfile) -> LocalUserD
 pub struct SqlitePrincipalStore;
 
 impl SqlitePrincipalStore {
-    pub fn resolved_display_name(
-        &self,
-        principal: &ResolvedPrincipal,
-    ) -> Result<Option<String>, IdentityError> {
-        let user_id = i64::try_from(principal.principal.user_id).map_err(|_| {
-            IdentityError::InvalidIdentifier("principal user ID exceeds storage range".into())
-        })?;
-        db::with_db(|connection| {
-            Ok(connection.query_row(
-                "SELECT display_name FROM principals WHERE principal_pk = ?1 AND authority_id = ?2 AND remote_user_id = ?3 AND descriptor_revision = ?4 AND retired_at IS NULL",
-                params![principal.handle.0, principal.principal.authority.as_str(), user_id, principal.descriptor_revision],
-                |row| row.get::<_, Option<String>>(0),
-            ).optional()?.flatten())
-        }).map_err(storage_error)
-    }
-
     pub fn principal_for_local_user(
         &self,
         user: LocalUserId,
