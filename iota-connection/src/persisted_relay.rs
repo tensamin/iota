@@ -620,7 +620,10 @@ fn backfill_escrow_on(
     if !matches!(state, "applied" | "queued" | "delivered") {
         return Ok(());
     }
-    let tx = connection.unchecked_transaction()?;
+    // Backfill reads then writes. Reserve the writer before reading so another
+    // recovery worker cannot force a deferred read-to-write lock upgrade.
+    let tx =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
     let matches:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM relay_inbox WHERE signer_principal=?1 AND message_id=?2 AND prepared_operation=?3 AND processing_generation=?4 AND state=?5 AND recovery_status!='blocked')",params![operation.signer.0,operation.message_id,observed,generation,state],|row| row.get(0))?;
     if !matches {
         return Ok(());
