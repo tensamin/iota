@@ -47,7 +47,7 @@ The private root is `private`; a chat root is `chat:<canonical chat ID>`.
 
 1. Generate a fresh 32-byte DEK per content version. Encrypt chunks and the
    shareable manifest locally, then wrap the DEK for the owner's verified key.
-   See [file crypto v1](../tau/file-crypto-v1.md). Never send a plaintext DEK,
+   See [file crypto v1](https://github.com/tensamin/tau/blob/468ca879638a59cdc93035d6bf4a8341c9d1f18d/file-crypto-v1.md). Never send a plaintext DEK,
    filename, MIME type, digest or private path to Iota.
 2. Stage ciphertext and its SHA-256 locally. Upload with existing
    `FileUploadStart`, using a fresh asset ID; it fixes MIME to
