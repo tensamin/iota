@@ -116,8 +116,8 @@ pub fn fixture_path() -> &'static std::path::Path {
             "encryptedSecrets": envelopes.map(|bytes| STANDARD.encode(bytes)),
             "kemCiphertexts": kems.map(|bytes| STANDARD.encode(bytes)),
         });
-        let path = std::path::Path::new("/tmp/opencode")
-            .join(format!("native-relay-peer-{}.json", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("native-relay-peer-{}.json", uuid::Uuid::new_v4()));
         std::fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
         path
     })
@@ -186,7 +186,7 @@ impl PeerRouter for TestTransport {
             return router.route(destination, frame).await;
         }
         assert_eq!(std::env::var("NATIVE_RELAY_TEST_STAGE").unwrap(), "origin");
-        let response_path = std::path::Path::new("/tmp/opencode").join(format!(
+        let response_path = std::env::temp_dir().join(format!(
             "native-destination-response-{}",
             uuid::Uuid::new_v4()
         ));
@@ -195,6 +195,9 @@ impl PeerRouter for TestTransport {
                 .args(["--exact", subprocess_test_name(), "--nocapture"])
                 .env("NATIVE_RELAY_TEST_STAGE", "destination")
                 .env("RELAY_NATIVE_CLIENT_FIXTURE", fixture_path())
+                .env_remove("RELAY_NATIVE_STORAGE")
+                .env_remove("IOTA_RELAY_FAULT_POINT")
+                .env_remove("IOTA_RELAY_FAULT_MESSAGE_ID")
                 .env(
                     "NATIVE_RELAY_TEST_REQUEST",
                     STANDARD.encode(frame.to_bytes().unwrap())
@@ -237,8 +240,7 @@ pub async fn run_native_stage() {
     let directory = std::env::var_os("RELAY_NATIVE_STORAGE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            std::path::Path::new("/tmp/opencode")
-                .join(format!("native-ingress-{}", uuid::Uuid::new_v4()))
+            std::env::temp_dir().join(format!("native-ingress-{}", uuid::Uuid::new_v4()))
         });
     std::fs::create_dir_all(&directory).unwrap();
     iota_util::file_util::configure_storage_directory(directory.clone());
@@ -595,7 +597,10 @@ fn native_ack_binds_exact_ciphertext_and_dictionary_not_correlation_id() {
 #[tokio::test]
 async fn first_epoch_crash_recovery_rechecks_peer_authority() {
     use iota_connection::chat_secret_recovery::*;
-    struct ChangedPeer(Vec<LocalNodeIdentity>);
+    struct ChangedPeer {
+        nodes: Vec<LocalNodeIdentity>,
+        requests: std::sync::atomic::AtomicUsize,
+    }
     #[async_trait]
     impl NodeIdentityResolver for ChangedPeer {
         async fn resolve_node(
@@ -603,7 +608,7 @@ async fn first_epoch_crash_recovery_rechecks_peer_authority() {
             id: &IotaNodeId,
         ) -> Result<ResolvedNodeIdentity, IdentityError> {
             let node = self
-                .0
+                .nodes
                 .iter()
                 .find(|node| node.node_id() == id)
                 .ok_or(IdentityError::NotFound)?;
@@ -627,13 +632,15 @@ async fn first_epoch_crash_recovery_rechecks_peer_authority() {
             request: &RecoveryRequest,
         ) -> Result<AuthenticatedRecoveryReply, RecoveryError> {
             assert!(request.proposal_digest.is_some());
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let node = self
-                .0
+                .nodes
                 .iter()
                 .find(|node| node.node_id() == id)
                 .ok_or(RecoveryError::Unauthorized)?;
-            // The original process observed a virgin peer. After its crash the
-            // same authenticated peer reports a conflicting accepted history.
+            // After restart the peer asserts conflict without supplying signed
+            // competing-operation evidence. This blocks commit, not the proposal.
             Ok(AuthenticatedRecoveryReply {
                 node: id.clone(),
                 key: node.public_keys(),
@@ -644,8 +651,20 @@ async fn first_epoch_crash_recovery_rechecks_peer_authority() {
             })
         }
     }
-    let directory = std::path::Path::new("/tmp/opencode")
-        .join(format!("native-crash-gate-{}", uuid::Uuid::new_v4()));
+    #[async_trait]
+    impl PeerRouter for ChangedPeer {
+        async fn route(
+            &self,
+            _: &RouteDestination,
+            _: CommunicationValue,
+        ) -> Result<RouteOutcome, RouteError> {
+            Err(RouteError::Delivery(
+                "peer delivery unavailable after restart".into(),
+            ))
+        }
+    }
+    let directory =
+        std::env::temp_dir().join(format!("native-crash-gate-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&directory).unwrap();
     let fixture = fixture();
     let nodes: Vec<_> = fixture["nodeKeys"]
@@ -677,8 +696,9 @@ async fn first_epoch_crash_recovery_rechecks_peer_authority() {
     let status = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", subprocess_test_name(), "--nocapture"])
         .env("NATIVE_RELAY_TEST_STAGE", "origin")
+        .env("RELAY_NATIVE_CLIENT_FIXTURE", fixture_path())
         .env("RELAY_NATIVE_STORAGE", &directory)
-        .env("IOTA_RELAY_FAULT_POINT", "after_claim_acquisition")
+        .env("IOTA_RELAY_FAULT_POINT", "before_proposal_commit")
         .env(
             "IOTA_RELAY_FAULT_MESSAGE_ID",
             format!("mtp-sealed-v1:{}", metadata.message_id().get()),
@@ -688,34 +708,63 @@ async fn first_epoch_crash_recovery_rechecks_peer_authority() {
     assert_eq!(
         status.code(),
         Some(86),
-        "child must crash after preflight and durable claim, before commit"
+        "child must crash after fresh peer proof and before proposal commit"
     );
     relay_support::initialize(&directory);
+    let changed_peer = Arc::new(ChangedPeer {
+        nodes: nodes.clone(),
+        requests: std::sync::atomic::AtomicUsize::new(0),
+    });
     let service = Arc::new(
         RelayService::new(
             Arc::new(iota_storage::identity::SqliteLocalUserStore),
-            Arc::new(TestTransport),
+            changed_peer.clone(),
         )
         .with_federation(Arc::new(Resolver), Arc::new(Node(nodes[0].clone()))),
     );
     install_recovery(Arc::new(RecoveryCoordinator::new(
         Arc::new(Resolver),
-        Arc::new(ChangedPeer(nodes.clone())),
+        changed_peer.clone(),
         Arc::new(SqlitePrincipalStore),
         Arc::new(iota_storage::identity::SqliteLocalUserStore),
         nodes[0].node_id().clone(),
-        Arc::new(ChangedPeer(nodes)),
+        changed_peer.clone(),
         Arc::new(OriginalOperationVerifier {
             relay: service.clone(),
         }),
     )));
-    relay_support::execute("UPDATE relay_inbox SET processing_deadline=0,recovery_next_at=0");
+    assert_eq!(
+        relay_support::count(
+            "SELECT count(*) FROM initial_secret_proposals WHERE state='verifying'"
+        ),
+        1
+    );
+    assert_eq!(relay_support::count("SELECT count(*) FROM relay_inbox"), 0);
+    relay_support::execute("UPDATE initial_secret_proposals SET claim_deadline=0,next_at=0");
     // Legacy synchronous replay must not bypass the newly required async gate.
     assert_eq!(service.recover_incomplete(10).unwrap().completed, 0);
-    relay_support::execute("UPDATE relay_inbox SET recovery_next_at=0,recovery_status='ready'");
-    let report = service.recover_incomplete_authorized(10).await.unwrap();
-    assert_eq!(report.completed, 0);
-    assert_eq!(report.blocked, 1);
+    service.retry_initial_secret_proposals().await.unwrap();
+    let proposal_outcome = db::with_db(|connection| {
+        Ok(connection.query_row(
+            "SELECT state,last_error FROM initial_secret_proposals",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )?)
+    })
+    .unwrap();
+    assert_eq!(
+        changed_peer
+            .requests
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        proposal_outcome,
+        (
+            "awaiting_peer_proof".into(),
+            Some("peer_or_storage_unavailable".into())
+        )
+    );
     assert_eq!(relay_support::count("SELECT count(*) FROM chat_secrets"), 0);
     assert_eq!(
         relay_support::count("SELECT count(*) FROM chat_secret_escrows"),

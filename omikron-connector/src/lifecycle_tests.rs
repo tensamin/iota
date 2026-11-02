@@ -110,7 +110,7 @@ async fn chat_read_dispatch_uses_canonical_owner_and_preserves_historical_epochs
         return;
     }
     let storage = StorageDirectory(
-        PathBuf::from("/tmp/opencode").join(format!("connector-chat-reads-{}", Uuid::new_v4())),
+        std::env::temp_dir().join(format!("connector-chat-reads-{}", Uuid::new_v4())),
     );
     std::fs::create_dir_all(&storage.0).unwrap();
     relay_support::initialize(&storage.0);

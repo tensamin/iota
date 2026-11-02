@@ -153,7 +153,7 @@ fn actual_commit_and_recovery_recheck_origin_lease() {
         assert!(status.success());
         return;
     }
-    let path = std::path::PathBuf::from("/tmp/opencode").join(format!(
+    let path = std::env::temp_dir().join(format!(
         "prepared-commit-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
