@@ -3,13 +3,19 @@ use iota_storage::tauth::{self, Scope};
 use mtp::crypto::{PublicKeyBundle, verify_ed25519};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::{sync::OnceLock, time::Duration};
 use trust_dns_resolver::{
     TokioAsyncResolver,
     config::{ResolverConfig, ResolverOpts},
 };
 use url::Url;
 
+const MAX_AUTHORIZATION_BYTES: usize = 16 * 1024;
+static DISCOVERY_REQUESTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+static DISCOVERY_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignedAuthorizationRequest {
     pub version: u16,
     pub app_id: String,
@@ -23,6 +29,7 @@ pub struct SignedAuthorizationRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppManifest {
     pub version: u16,
     pub app_id: String,
@@ -34,7 +41,10 @@ pub struct AppManifest {
     pub signature: String,
 }
 
+/// A self-issued delegation, not proof of the claimed account's ownership.
+/// App trust comes from the domain's TXT commitment and authenticated HTTPS.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OwnerCertificate {
     pub version: u16,
     pub app_id: String,
@@ -100,22 +110,32 @@ struct UnsignedOwnerCertificate<'a> {
 }
 
 pub async fn verify_authorization(
-    client: &reqwest::Client,
     request_json: &str,
 ) -> Result<VerifiedAuthorization, VerificationError> {
+    if request_json.len() > MAX_AUTHORIZATION_BYTES {
+        return Err(VerificationError::Request(
+            "authorization request is too large".into(),
+        ));
+    }
     let request: SignedAuthorizationRequest = serde_json::from_str(request_json)
         .map_err(|error| VerificationError::Request(error.to_string()))?;
     validate_request_shape(&request)?;
-    let result = verify_discovery(client, &request).await;
-    if matches!(
-        &result,
-        Err(VerificationError::Dns(_)
-            | VerificationError::Http(_)
-            | VerificationError::Manifest(_))
-    ) {
-        let _ = tauth::mark_insecure(&request.app_id, &request.domain);
-    }
-    result
+    let _permit = DISCOVERY_REQUESTS
+        .try_acquire()
+        .map_err(|_| VerificationError::Http("discovery capacity is unavailable".into()))?;
+    let client = DISCOVERY_CLIENT
+        .get_or_init(|| {
+            iota_util::federation_http::client_builder(false)
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| VerificationError::Http(error.clone()))?;
+    // Failed discovery rejects only this attempt. It is not authenticated
+    // evidence that can revoke grants or sessions belonging to any user.
+    tokio::time::timeout(Duration::from_secs(15), verify_discovery(client, &request))
+        .await
+        .map_err(|_| VerificationError::Http("discovery deadline exceeded".into()))?
 }
 
 async fn verify_discovery(
@@ -127,36 +147,24 @@ async fn verify_discovery(
         .txt_lookup(format!("_tauth.{}", request.domain))
         .await
         .map_err(|error| VerificationError::Dns(error.to_string()))?;
-    let txt = lookup
-        .iter()
-        .map(|record| {
-            record
-                .txt_data()
-                .iter()
-                .flat_map(|part| part.iter().copied())
-                .collect::<Vec<_>>()
-        })
-        .find_map(|bytes| {
-            String::from_utf8(bytes)
-                .ok()
-                .filter(|value| value.starts_with("v=TAUTH1;"))
-        })
-        .ok_or_else(|| VerificationError::Dns("missing v=TAUTH1 TXT value".into()))?;
-    let txt_app_id = txt_value(&txt, "app")
-        .ok_or_else(|| VerificationError::Dns("TXT app fingerprint is missing".into()))?;
-    let txt_manifest_hash = txt_value(&txt, "manifest")
-        .ok_or_else(|| VerificationError::Dns("TXT manifest hash is missing".into()))?;
-    if txt_app_id != request.app_id || !is_sha256_hex(txt_manifest_hash) {
-        return Err(VerificationError::Dns(
-            "TXT fingerprint or manifest hash is invalid".into(),
-        ));
-    }
+    let txt_manifest_hash = dns_manifest_hash(
+        lookup
+            .iter()
+            .map(|record| {
+                record
+                    .txt_data()
+                    .iter()
+                    .flat_map(|part| part.iter().copied())
+                    .collect::<Vec<_>>()
+            })
+            .filter_map(|bytes| String::from_utf8(bytes).ok()),
+        &request.app_id,
+    )?;
 
-    let manifest_url = Url::parse(&format!(
-        "https://{}/.well-known/tauth.json",
-        request.domain
-    ))
-    .map_err(|error| VerificationError::Manifest(error.to_string()))?;
+    let locator = iota_identity::AuthorityLocator::new(&request.domain)
+        .map_err(|error| VerificationError::Manifest(error.to_string()))?;
+    let manifest_url = iota_util::federation_http::url(&locator, "/.well-known/tauth.json", false)
+        .map_err(|error| VerificationError::Manifest(error.to_string()))?;
     let response = client
         .get(manifest_url)
         .send()
@@ -164,12 +172,11 @@ async fn verify_discovery(
         .map_err(|error| VerificationError::Http(error.to_string()))?
         .error_for_status()
         .map_err(|error| VerificationError::Http(error.to_string()))?;
-    let bytes = response
-        .bytes()
+    let bytes = iota_util::federation_http::bounded_bytes(response)
         .await
         .map_err(|error| VerificationError::Http(error.to_string()))?;
     let manifest_hash = hex::encode(Sha256::digest(&bytes));
-    if manifest_hash != txt_manifest_hash.to_ascii_lowercase() {
+    if manifest_hash != txt_manifest_hash {
         return Err(VerificationError::Manifest(
             "manifest hash does not match DNS".into(),
         ));
@@ -190,8 +197,15 @@ fn validate_request_shape(request: &SignedAuthorizationRequest) -> Result<(), Ve
             "version, app ID, or state is invalid".into(),
         ));
     }
-    let domain = request.domain.trim().to_ascii_lowercase();
-    if domain != request.domain || domain.is_empty() || domain.contains('/') {
+    let domain = iota_identity::AuthorityLocator::new(&request.domain)
+        .map_err(|_| VerificationError::Request("domain is not canonical".into()))?;
+    let origin = Url::parse(&format!("https://{}/", request.domain))
+        .map_err(|_| VerificationError::Request("domain is not canonical".into()))?;
+    if domain.as_str() != request.domain
+        || domain.is_ip_literal()
+        || request.domain.contains(':')
+        || !matches!(origin.host(), Some(url::Host::Domain(host)) if host == request.domain)
+    {
         return Err(VerificationError::Request("domain is not canonical".into()));
     }
     validate_redirect(&request.redirect_uri)?;
@@ -346,12 +360,35 @@ fn validate_redirect(value: &str) -> Result<(), VerificationError> {
 }
 
 fn txt_value<'a>(record: &'a str, key: &str) -> Option<&'a str> {
-    record.split(';').find_map(|field| {
+    let mut values = record.split(';').filter_map(|field| {
         field
             .split_once('=')
-            .filter(|(name, value)| *name == key && !value.is_empty())
+            .filter(|(name, _)| *name == key)
             .map(|(_, value)| value)
-    })
+    });
+    let value = values.next()?;
+    (!value.is_empty() && values.next().is_none()).then_some(value)
+}
+
+fn dns_manifest_hash(
+    records: impl Iterator<Item = String>,
+    app_id: &str,
+) -> Result<String, VerificationError> {
+    let mut matches = records.filter(|record| {
+        txt_value(record, "v") == Some("TAUTH1") && txt_value(record, "app") == Some(app_id)
+    });
+    let record = matches
+        .next()
+        .ok_or_else(|| VerificationError::Dns("missing app's v=TAUTH1 TXT value".into()))?;
+    if matches.next().is_some() {
+        return Err(VerificationError::Dns(
+            "ambiguous app TXT commitment".into(),
+        ));
+    }
+    let hash = txt_value(&record, "manifest")
+        .filter(|hash| is_sha256_hex(hash))
+        .ok_or_else(|| VerificationError::Dns("TXT manifest hash is missing or invalid".into()))?;
+    Ok(hash.to_ascii_lowercase())
 }
 
 fn is_sha256_hex(value: &str) -> bool {
@@ -486,5 +523,64 @@ mod tests {
         request.expires_at = tauth::now_seconds() + 60;
         request.redirect_uri = "https://app.example/callback#fragment".into();
         assert!(validate_request_shape(&request).is_err());
+    }
+
+    #[test]
+    fn discovery_requires_an_exact_dns_domain_not_a_url_or_numeric_host() {
+        let (mut request, _) = signed_authorization();
+        for domain in [
+            "127.0.0.1",
+            "2130706433",
+            "[::1]",
+            "user@app.example",
+            "app.example:443",
+            "app.example?query",
+            "app.example#fragment",
+            "App.Example",
+            "app.example/",
+            " app.example",
+        ] {
+            request.domain = domain.into();
+            assert!(validate_request_shape(&request).is_err(), "{domain}");
+        }
+        request.domain = "app.example".into();
+        validate_request_shape(&request).unwrap();
+    }
+
+    #[test]
+    fn txt_commitments_select_the_app_and_reject_ambiguous_fields() {
+        let app = "ab".repeat(32);
+        let hash = "cd".repeat(32);
+        let record = format!("v=TAUTH1;app={app};manifest={hash}");
+        let other = format!("v=TAUTH1;app={};manifest={hash}", "ef".repeat(32));
+        assert_eq!(
+            dns_manifest_hash(vec![other.clone(), record.clone()].into_iter(), &app).unwrap(),
+            hash
+        );
+        assert!(dns_manifest_hash(vec![other].into_iter(), &app).is_err());
+        assert!(dns_manifest_hash(vec![record.clone(), record.clone()].into_iter(), &app).is_err());
+        for malformed in [
+            format!("{record};app={app}"),
+            format!("{record};manifest={hash}"),
+            format!("{record};v=OTHER"),
+            format!("v=TAUTH1;app={app};manifest=not-a-hash"),
+        ] {
+            assert!(dns_manifest_hash(std::iter::once(malformed), &app).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_or_ambiguous_authorization_is_rejected_before_networking() {
+        assert!(matches!(
+            verify_authorization(&" ".repeat(MAX_AUTHORIZATION_BYTES + 1)).await,
+            Err(VerificationError::Request(_))
+        ));
+        let (request, _) = signed_authorization();
+        let json = serde_json::to_string(&request).unwrap();
+        let duplicated = format!("{},\"domain\":\"other.example\"}}", &json[..json.len() - 1]);
+        assert!(matches!(
+            verify_authorization(&duplicated).await,
+            Err(VerificationError::Request(_))
+        ));
     }
 }

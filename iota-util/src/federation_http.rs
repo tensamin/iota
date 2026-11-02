@@ -91,8 +91,18 @@ pub fn url(
 }
 
 pub async fn bounded_json<T: serde::de::DeserializeOwned + Send + 'static>(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
 ) -> Result<T, IdentityError> {
+    let body = bounded_bytes(response).await?;
+    tokio::task::spawn_blocking(move || {
+        serde_json::from_slice(&body).map_err(|e| IdentityError::InvalidDescriptor(e.to_string()))
+    })
+    .await
+    .map_err(|e| IdentityError::Unavailable(e.to_string()))?
+}
+
+/// Preserve exact authenticated metadata bytes for protocols with detached hashes.
+pub async fn bounded_bytes(mut response: reqwest::Response) -> Result<Vec<u8>, IdentityError> {
     if response.status().is_redirection() {
         return Err(IdentityError::InvalidDescriptor(
             "federation redirects are disabled".into(),
@@ -119,16 +129,75 @@ pub async fn bounded_json<T: serde::de::DeserializeOwned + Send + 'static>(
         }
         body.extend_from_slice(&chunk);
     }
-    tokio::task::spawn_blocking(move || {
-        serde_json::from_slice(&body).map_err(|e| IdentityError::InvalidDescriptor(e.to_string()))
-    })
-    .await
-    .map_err(|e| IdentityError::Unavailable(e.to_string()))?
+    Ok(body)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn http_response(bytes: Vec<u8>) -> (reqwest::Response, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            let _ = socket.write_all(&bytes).await;
+        });
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
+        (response, server)
+    }
+
+    #[tokio::test]
+    async fn hashed_metadata_preserves_exact_bytes_and_refuses_redirects() {
+        let body = b"{ \"signed\" : true }\n";
+        let mut wire = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        wire.extend_from_slice(body);
+        let (response, server) = http_response(wire).await;
+        assert_eq!(bounded_bytes(response).await.unwrap(), body);
+        server.await.unwrap();
+
+        let (response, server) = http_response(b"HTTP/1.1 302 Found\r\nLocation: https://other.example/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()).await;
+        assert!(bounded_bytes(response).await.is_err());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn metadata_limits_cover_declared_and_streamed_body_sizes() {
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            MAX_METADATA_BYTES + 1
+        );
+        let (response, server) = http_response(header.into_bytes()).await;
+        assert!(bounded_bytes(response).await.is_err());
+        server.await.unwrap();
+
+        let mut wire = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n",
+            MAX_METADATA_BYTES + 1
+        )
+        .into_bytes();
+        wire.extend(std::iter::repeat_n(b'x', MAX_METADATA_BYTES + 1));
+        wire.extend_from_slice(b"\r\n0\r\n\r\n");
+        let (response, server) = http_response(wire).await;
+        assert!(bounded_bytes(response).await.is_err());
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn connection_dns_and_literal_urls_reject_non_public_targets() {
