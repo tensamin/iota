@@ -396,6 +396,12 @@ pub trait NodeIdentityResolver: Send + Sync {
 
 /// Verified discovery provenance. A locator cannot silently change authority or node.
 pub trait AuthorityDirectory: Send + Sync {
+    fn record_verified_omega(
+        &self,
+        locator: &AuthorityLocator,
+        descriptor: &VerifiedPrincipalDescriptor,
+    ) -> Result<(), IdentityError>;
+
     fn record_verified_iota(
         &self,
         locator: &AuthorityLocator,

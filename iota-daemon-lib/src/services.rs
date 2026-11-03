@@ -94,12 +94,16 @@ impl DaemonServices {
                 iota_storage::authority_directory::SqliteAuthorityDirectory,
             )),
         );
-        let remote_omega: Arc<dyn IdentityResolver> =
-            Arc::new(other_iota::RemoteOmegaResolver::new(
+        let remote_omega: Arc<dyn IdentityResolver> = Arc::new(
+            other_iota::RemoteOmegaResolver::new(
                 federation_client,
                 principals.clone(),
                 node_directory,
-            ));
+            )
+            .with_authority_directory(Arc::new(
+                iota_storage::authority_directory::SqliteAuthorityDirectory,
+            )),
+        );
         let identities: Arc<dyn IdentityResolver> =
             Arc::new(CompositeIdentityResolver::new(vec![
                 local_identity,
@@ -239,11 +243,16 @@ impl DaemonServices {
                         iota_storage::authority_directory::SqliteAuthorityDirectory,
                     )),
                 ),
-                Arc::new(other_iota::RemoteOmegaResolver::new(
-                    federation_client,
-                    principals.clone(),
-                    nodes,
-                )),
+                Arc::new(
+                    other_iota::RemoteOmegaResolver::new(
+                        federation_client,
+                        principals.clone(),
+                        nodes,
+                    )
+                    .with_authority_directory(Arc::new(
+                        iota_storage::authority_directory::SqliteAuthorityDirectory,
+                    )),
+                ),
             ])
             .expect("centralized and remote identity resolvers compose"),
         );

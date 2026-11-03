@@ -90,6 +90,7 @@ pub struct RemoteOmegaResolver {
     principals: Arc<dyn PrincipalStore>,
     nodes: Arc<dyn NodeDirectory>,
     authorities: RwLock<HashMap<AuthorityLocator, DiscoveredAuthority>>,
+    authority_directory: Option<Arc<dyn iota_identity::AuthorityDirectory>>,
 }
 
 fn verify_key_pin(

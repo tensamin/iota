@@ -338,6 +338,13 @@ impl IdentityResolver for RemoteIotaResolver {
         &self,
         principal: &PrincipalId,
     ) -> Result<ResolvedPrincipal, IdentityError> {
+        if !principal
+            .authority
+            .as_str()
+            .starts_with("authority:iota:v1:")
+        {
+            return Err(IdentityError::NotFound);
+        }
         let mut locators = match &self.authority_directory {
             Some(directory) => directory.locators_for(&principal.authority)?,
             None => Vec::new(),
@@ -454,6 +461,13 @@ impl IdentityResolver for RemoteIotaResolver {
         principal: &PrincipalId,
         context: &ResolutionContext,
     ) -> Result<ResolvedPrincipal, IdentityError> {
+        if !principal
+            .authority
+            .as_str()
+            .starts_with("authority:iota:v1:")
+        {
+            return Err(IdentityError::NotFound);
+        }
         let cached = self.principals.get_by_canonical_id(principal)?;
         let now = now_millis();
         if let Some(cached) = cached.as_ref()

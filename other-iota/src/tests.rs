@@ -7,6 +7,51 @@ use iota_identity::{
 use mtp::codec::CommunicationType;
 use std::sync::Mutex;
 
+#[derive(Default)]
+struct MemoryOmegaAuthorities(Mutex<HashMap<AuthorityId, Vec<AuthorityLocator>>>);
+
+impl iota_identity::AuthorityDirectory for MemoryOmegaAuthorities {
+    fn record_verified_iota(
+        &self,
+        _: &AuthorityLocator,
+        _: &AuthorityId,
+        _: &IotaNodeId,
+        _: i64,
+    ) -> Result<(), IdentityError> {
+        Err(IdentityError::Unavailable(
+            "Omega fixture cannot record an Iota locator".into(),
+        ))
+    }
+
+    fn record_verified_omega(
+        &self,
+        locator: &AuthorityLocator,
+        verified: &VerifiedPrincipalDescriptor,
+    ) -> Result<(), IdentityError> {
+        let mut entries = self.0.lock().unwrap();
+        let locators = entries
+            .entry(verified.descriptor().principal.authority.clone())
+            .or_default();
+        if !locators.contains(locator) {
+            locators.push(locator.clone());
+        }
+        Ok(())
+    }
+
+    fn locators_for(
+        &self,
+        authority: &AuthorityId,
+    ) -> Result<Vec<AuthorityLocator>, IdentityError> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .get(authority)
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
 fn node() -> IotaNodeId {
     iota_identity::LocalNodeIdentity::from_keyring(mtp::crypto::Keyring::generate())
         .expect("generated identity is valid")
@@ -923,7 +968,9 @@ async fn remote_omega_current_resolution_bypasses_fresh_cache_after_reassignment
         pins: Mutex::new(HashMap::new()),
         certificates: Mutex::new(HashMap::new()),
     });
-    let resolver = RemoteOmegaResolver::new(client.clone(), principals, nodes.clone());
+    let directory = Arc::new(MemoryOmegaAuthorities::default());
+    let resolver = RemoteOmegaResolver::new(client.clone(), principals.clone(), nodes.clone())
+        .with_authority_directory(directory.clone());
 
     let resolved = resolver
         .resolve_address(
@@ -1018,4 +1065,27 @@ async fn remote_omega_current_resolution_bypasses_fresh_cache_after_reassignment
         proof.authority_public_key,
         omega.public_key_bundle().try_to_base64().unwrap()
     );
+    let iota_resolver = RemoteIotaResolver::new(client.clone(), principals.clone(), nodes.clone())
+        .with_authority_directory(directory.clone());
+    assert!(matches!(
+        iota_resolver.resolve_current_principal(&principal_id).await,
+        Err(IdentityError::NotFound)
+    ));
+    let restarted = RemoteOmegaResolver::new(client.clone(), principals, nodes)
+        .with_authority_directory(directory);
+    let restored = restarted
+        .resolve_current_principal(&principal_id)
+        .await
+        .expect("fresh Omega resolution must survive resolver restart");
+    assert_eq!(restored.descriptor_revision, 2);
+    let replacement = mtp::crypto::Keyring::generate().public_key_bundle();
+    {
+        let mut discovered = client.authority.lock().unwrap();
+        discovered.authority_id = AuthorityId::for_omega(&replacement).unwrap();
+        discovered.public_keys = replacement;
+    }
+    assert!(matches!(
+        restarted.resolve_current_principal(&principal_id).await,
+        Err(IdentityError::KeyPinMismatch)
+    ));
 }
