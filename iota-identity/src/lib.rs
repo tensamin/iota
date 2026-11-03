@@ -194,6 +194,15 @@ pub struct ResolvedPrincipal {
     pub descriptor_revision: i64,
     pub valid_until: Option<i64>,
     pub resolved_at: i64,
+    pub proof: Option<PrincipalProofV1>,
+}
+
+/// Original authority-signed identity evidence, retained only by fresh resolution.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrincipalProofV1 {
+    pub descriptor: PrincipalDescriptorWireV1,
+    pub authority_public_key: String,
 }
 
 impl ResolvedPrincipal {

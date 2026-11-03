@@ -439,6 +439,7 @@ impl LocalDescriptorPublisher for SqliteLocalDescriptorPublisher {
 }
 
 pub struct LocalIdentityResolver {
+    identity: iota_identity::LocalNodeIdentity,
     authority: AuthorityId,
     authority_kind: AuthorityKind,
     home: PrincipalHome,
@@ -448,16 +449,15 @@ pub struct LocalIdentityResolver {
 
 impl LocalIdentityResolver {
     pub fn new(
-        authority: AuthorityId,
-        authority_kind: AuthorityKind,
-        home: PrincipalHome,
+        identity: iota_identity::LocalNodeIdentity,
         local_users: Arc<dyn LocalUserStore>,
         principals: Arc<SqlitePrincipalStore>,
     ) -> Self {
         Self {
-            authority,
-            authority_kind,
-            home,
+            authority: identity.authority_id().clone(),
+            authority_kind: AuthorityKind::Iota,
+            home: PrincipalHome::Iota(identity.node_id().clone()),
+            identity,
             local_users,
             principals,
         }
@@ -494,7 +494,7 @@ impl iota_identity::IdentityResolver for LocalIdentityResolver {
         if !self.local_users.is_hosted_here(user)? {
             return Err(IdentityError::NotFound);
         }
-        let resolved = self.resolve_principal(principal).await?;
+        let mut resolved = self.resolve_principal(principal).await?;
         let handle = self
             .local_users
             .principal_for_local_user(user)?
@@ -515,6 +515,17 @@ impl iota_identity::IdentityResolver for LocalIdentityResolver {
                 "local principal ownership changed".into(),
             ));
         }
+        let signed = SqliteLocalDescriptorPublisher::new(self.identity.clone())
+            .principal_descriptor(user)?;
+        resolved.proof = Some(iota_identity::PrincipalProofV1 {
+            descriptor: signed.to_wire_v1()?,
+            authority_public_key: self
+                .identity
+                .keyring()
+                .public_key_bundle()
+                .try_to_base64()
+                .map_err(|error| IdentityError::InvalidDescriptor(error.to_string()))?,
+        });
         Ok(resolved)
     }
 
@@ -882,6 +893,7 @@ fn load_principal(
         crate::storage_error::StorageError::Other("stored principal user ID is negative".into())
     })?;
     Ok(Some(ResolvedPrincipal {
+        proof: None,
         principal: PrincipalId { authority, user_id },
         handle: PrincipalHandle(handle),
         username,

@@ -6,9 +6,8 @@ use iota_connection::connection_handler::{PeerRouter, RouteDestination, RouteErr
 use iota_connection::relay_service::{RelayNodeIdentity, RelayService};
 use iota_identity::{
     AuthorityId, AuthorityKind, AuthorityLocator, CompositeIdentityResolver, IdentityError,
-    IdentityResolver, IotaNodeId, LocalUserStore, NodeDirectory, NodeIdentityResolver,
-    PrincipalHome, PrincipalId, PrincipalStore, ResolutionContext, ResolvedNodeIdentity,
-    ResolvedPrincipal, UserAddress,
+    IdentityResolver, IotaNodeId, LocalUserStore, NodeDirectory, NodeIdentityResolver, PrincipalId,
+    PrincipalStore, ResolutionContext, ResolvedNodeIdentity, ResolvedPrincipal, UserAddress,
 };
 use mtp::codec::CommunicationValue;
 use omikron_connector::{OmikronClient, OmikronConnection};
@@ -73,9 +72,7 @@ impl DaemonServices {
             Arc::new(iota_storage::identity::SqliteLocalUserStore);
         let local_identity: Arc<dyn IdentityResolver> =
             Arc::new(iota_storage::identity::LocalIdentityResolver::new(
-                identity.authority_id().clone(),
-                AuthorityKind::Iota,
-                PrincipalHome::Iota(identity.node_id().clone()),
+                identity.clone(),
                 local_users.clone(),
                 principals.clone(),
             ));

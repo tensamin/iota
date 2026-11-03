@@ -41,6 +41,17 @@ pub async fn handle_user_resolve(
     cv: &CommunicationValue,
     identities: &dyn iota_identity::IdentityResolver,
 ) -> CommunicationValue {
+    let proof_requested = match cv.get_data(DataType::Json) {
+        None => false,
+        Some(DataValue::Str(json)) if json == "{\"principal_proof\":1}" => true,
+        _ => {
+            return resolve_error(
+                cv,
+                CommunicationType::ErrorInvalidData,
+                "invalid_proof_request",
+            );
+        }
+    };
     let Some(raw) = cv.get_data(DataType::UserAddress).as_string() else {
         return resolve_error(cv, CommunicationType::ErrorInvalidData, "missing_address");
     };
@@ -55,9 +66,13 @@ pub async fn handle_user_resolve(
                 return resolve_error(cv, CommunicationType::ErrorInvalidData, "invalid_address");
             }
         };
-        identities
-            .resolve_principal_with_context(&principal, &context)
-            .await
+        if proof_requested {
+            identities.resolve_current_principal(&principal).await
+        } else {
+            identities
+                .resolve_principal_with_context(&principal, &context)
+                .await
+        }
     } else {
         let address = match iota_identity::UserAddress::parse(&raw) {
             Ok(address) => address,
@@ -69,7 +84,16 @@ pub async fn handle_user_resolve(
             return resolve_error(cv, CommunicationType::ErrorInvalidData, "missing_authority");
         }
         match identities.resolve_address(&address, &context).await {
-            Ok(resolved) => {
+            Ok(mut resolved) => {
+                if proof_requested {
+                    resolved = match identities
+                        .resolve_current_principal(&resolved.principal)
+                        .await
+                    {
+                        Ok(resolved) => resolved,
+                        Err(error) => return identity_resolve_error(cv, &error),
+                    };
+                }
                 if let Some(pin) = &address.public_key_pin {
                     let pin = match pin.try_as_bytes() {
                         Ok(pin) => pin,
@@ -143,6 +167,27 @@ pub async fn handle_user_resolve(
         )
         .add_typed_default(DataType::NodeId, DataValue::Str(node.as_str().into()))
         .add_typed_default(DataType::SigningKeys, DataValue::Array(keys));
+    if proof_requested {
+        let Some(proof) = &resolved.proof else {
+            return resolve_error(
+                cv,
+                CommunicationType::ErrorNoIota,
+                "identity_proof_unavailable",
+            );
+        };
+        let json = match serde_json::to_string(proof) {
+            Ok(json) if json.len() <= 256 * 1024 => json,
+            Ok(_) => {
+                return resolve_error(
+                    cv,
+                    CommunicationType::ErrorInvalidData,
+                    "identity_proof_too_large",
+                );
+            }
+            Err(error) => return internal_handler_error(cv, "user_resolve.proof", error),
+        };
+        response = response.add_typed_default(DataType::Json, DataValue::Str(json));
+    }
     if let Some(username) = &resolved.username {
         response = response.add_typed_default(DataType::Username, DataValue::Str(username.clone()));
     }

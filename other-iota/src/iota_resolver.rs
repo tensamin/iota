@@ -272,11 +272,15 @@ impl RemoteIotaResolver {
         selector: &UserSelector,
     ) -> Result<ResolvedPrincipal, IdentityError> {
         let verified_node = self.refresh_node(locator, authority).await?;
-        let signed = self
-            .client
-            .principal_descriptor(locator, selector)
-            .await?
-            .parse()?;
+        let wire = self.client.principal_descriptor(locator, selector).await?;
+        let proof = iota_identity::PrincipalProofV1 {
+            descriptor: wire.clone(),
+            authority_public_key: authority
+                .public_keys
+                .try_to_base64()
+                .map_err(|error| IdentityError::InvalidDescriptor(error.to_string()))?,
+        };
+        let signed = wire.parse()?;
         match selector {
             UserSelector::UserId(user_id) if signed.descriptor.principal.user_id != *user_id => {
                 return Err(IdentityError::InvalidDescriptor(
@@ -303,9 +307,12 @@ impl RemoteIotaResolver {
             now_millis(),
         )?;
         let handle = self.principals.upsert_remote_descriptor(&verified)?;
-        self.principals
+        let mut resolved = self
+            .principals
             .get_principal(handle)?
-            .ok_or(IdentityError::NotFound)
+            .ok_or(IdentityError::NotFound)?;
+        resolved.proof = Some(proof);
+        Ok(resolved)
     }
 
     pub(super) fn cached(

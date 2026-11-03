@@ -12,6 +12,36 @@ use mtp::{
 };
 
 struct Resolver;
+struct ProofResolver(ResolvedPrincipal);
+#[async_trait]
+impl IdentityResolver for ProofResolver {
+    async fn resolve_current_principal(
+        &self,
+        id: &PrincipalId,
+    ) -> Result<ResolvedPrincipal, IdentityError> {
+        if *id != self.0.principal {
+            return Err(IdentityError::NotFound);
+        }
+        Ok(self.0.clone())
+    }
+    async fn resolve_address(
+        &self,
+        _: &UserAddress,
+        _: &ResolutionContext,
+    ) -> Result<ResolvedPrincipal, IdentityError> {
+        Err(IdentityError::NotFound)
+    }
+    async fn resolve_principal(&self, _: &PrincipalId) -> Result<ResolvedPrincipal, IdentityError> {
+        panic!("proof requests must not use cached principal resolution")
+    }
+    async fn signing_keys(
+        &self,
+        _: &PrincipalId,
+        _: &ResolutionContext,
+    ) -> Result<Vec<PublicKeyBundle>, IdentityError> {
+        Ok(self.0.public_keys.clone())
+    }
+}
 #[async_trait]
 impl IdentityResolver for Resolver {
     async fn resolve_address(
@@ -479,6 +509,67 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
         string(&resolved, D::PublicKey),
         node.public_keys().try_to_base64().unwrap()
     );
+    assert!(resolved.get_data(D::Json).is_none());
+    let proof_request = resolve
+        .clone()
+        .add_typed_default(D::Json, DataValue::Str("{\"principal_proof\":1}".into()));
+    let mut fresh = SqlitePrincipalStore
+        .get_by_canonical_id(&ids[0])
+        .unwrap()
+        .unwrap();
+    let signed = SignedPrincipalDescriptor::sign(
+        PrincipalDescriptor {
+            principal: fresh.principal.clone(),
+            authority_kind: AuthorityKind::Iota,
+            username: fresh.username.clone(),
+            display_name: None,
+            public_keys: fresh.public_keys.clone(),
+            home: fresh.home.clone(),
+            revision: fresh.descriptor_revision,
+            valid_until: fresh.valid_until,
+            issued_at: now,
+        },
+        &node.keyring(),
+    )
+    .unwrap();
+    fresh.proof = Some(PrincipalProofV1 {
+        descriptor: signed.to_wire_v1().unwrap(),
+        authority_public_key: node.public_keys().try_to_base64().unwrap(),
+    });
+    let proved = handle_user_resolve(&proof_request, &ProofResolver(fresh.clone())).await;
+    assert!(proved.is_type(C::UserResolved), "{proved:?}");
+    let proof: PrincipalProofV1 = serde_json::from_str(&string(&proved, D::Json)).unwrap();
+    proof
+        .descriptor
+        .parse()
+        .unwrap()
+        .verify(
+            &ids[0].authority,
+            &node.public_keys(),
+            Some(fresh.descriptor_revision),
+            now,
+        )
+        .unwrap();
+    fresh.proof = None;
+    assert!(
+        handle_user_resolve(&proof_request, &ProofResolver(fresh))
+            .await
+            .is_type(C::ErrorNoIota)
+    );
+    for json in [
+        "{}",
+        "{\"principal_proof\":2}",
+        "{\"principal_proof\":1,\"principal_proof\":1}",
+    ] {
+        let invalid = resolve
+            .clone()
+            .add_typed_default(D::Json, DataValue::Str(json.into()));
+        assert!(
+            handle_user_resolve(&invalid, &Resolver)
+                .await
+                .is_type(C::ErrorInvalidData)
+        );
+    }
     let bare =
         request(C::UserResolve).add_typed_default(D::UserAddress, DataValue::Str("7".into()));
     assert!(

@@ -218,6 +218,7 @@ impl PrincipalStore for MemoryPrincipals {
         values.insert(
             descriptor_value.principal.clone(),
             ResolvedPrincipal {
+                proof: None,
                 principal: descriptor_value.principal.clone(),
                 handle,
                 username: descriptor_value.username.clone(),
@@ -731,6 +732,20 @@ async fn current_iota_resolution_bootstraps_from_verified_node_after_resolver_re
         .unwrap();
     assert_eq!(current.principal, principal);
     assert_eq!(current.descriptor_revision, 1);
+    let proof = current
+        .proof
+        .as_ref()
+        .expect("fresh resolution retains its signed proof");
+    let authority_keys =
+        mtp::crypto::PublicKeyBundle::from_base64(&proof.authority_public_key).unwrap();
+    let verified = proof
+        .descriptor
+        .clone()
+        .parse()
+        .unwrap()
+        .verify(&principal.authority, &authority_keys, Some(1), now_millis())
+        .unwrap();
+    assert_eq!(verified.descriptor().principal, principal);
 }
 
 #[tokio::test]
@@ -982,4 +997,25 @@ async fn remote_omega_current_resolution_bypasses_fresh_cache_after_reassignment
         next_key.try_as_bytes().unwrap()
     );
     assert_eq!(current.descriptor_revision, 2);
+    let proof = current
+        .proof
+        .as_ref()
+        .expect("fresh Omega resolution retains the authority proof");
+    let verified = proof
+        .descriptor
+        .clone()
+        .parse()
+        .unwrap()
+        .verify(
+            &principal_id.authority,
+            &omega.public_key_bundle(),
+            Some(2),
+            now_millis(),
+        )
+        .unwrap();
+    assert_eq!(verified.descriptor().home, current.home);
+    assert_eq!(
+        proof.authority_public_key,
+        omega.public_key_bundle().try_to_base64().unwrap()
+    );
 }

@@ -49,6 +49,13 @@ impl RemoteOmegaResolver {
         selector: &UserSelector,
     ) -> Result<ResolvedPrincipal, IdentityError> {
         let wire = self.client.principal_descriptor(locator, selector).await?;
+        let proof = iota_identity::PrincipalProofV1 {
+            descriptor: wire.clone(),
+            authority_public_key: authority
+                .public_keys
+                .try_to_base64()
+                .map_err(|error| IdentityError::InvalidDescriptor(error.to_string()))?,
+        };
         let home_node = wire.home_node.clone();
         let signed = wire.parse()?;
         match selector {
@@ -117,9 +124,12 @@ impl RemoteOmegaResolver {
             )?
         };
         let handle = self.principals.upsert_remote_descriptor(&verified)?;
-        self.principals
+        let mut resolved = self
+            .principals
             .get_principal(handle)?
-            .ok_or(IdentityError::NotFound)
+            .ok_or(IdentityError::NotFound)?;
+        resolved.proof = Some(proof);
+        Ok(resolved)
     }
 
     pub(super) fn cached(

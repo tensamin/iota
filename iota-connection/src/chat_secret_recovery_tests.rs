@@ -216,6 +216,7 @@ fn setup(
         user_id: 1,
     };
     let resolved = |principal: PrincipalId, home: IotaNodeId| ResolvedPrincipal {
+        proof: None,
         principal,
         handle: PrincipalHandle(1),
         username: None,
