@@ -9,14 +9,15 @@ mod v68_paged_sync;
 mod v69_sync_event_payloads;
 mod v70_files;
 mod v71_omega_authority_provenance;
+mod v72_incremental_sync;
 
 use super::*;
 
 pub(super) fn verify_supported_schema(conn: &Connection) -> Result<i64, StorageError> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version > 71 {
+    if version > 72 {
         return Err(StorageError::Other(format!(
-            "database schema {version} is newer than supported schema 71"
+            "database schema {version} is newer than supported schema 72"
         )));
     }
     Ok(version)
@@ -79,5 +80,6 @@ pub(super) fn run_migrations_on_connection(conn: &Connection) -> Result<(), Stor
     v69_sync_event_payloads::migrate(conn, current_version)?;
     v70_files::migrate(conn, current_version)?;
     v71_omega_authority_provenance::migrate(conn, current_version)?;
+    v72_incremental_sync::migrate(conn, current_version)?;
     Ok(())
 }

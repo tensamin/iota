@@ -128,7 +128,7 @@ fn startup_refuses_corruption_prior_recovery_and_future_schemas_until_explicit_r
     .unwrap();
     let connection = rusqlite::Connection::open(future.join("messages.sqlite3")).unwrap();
     connection
-        .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA user_version=72;")
+        .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA user_version=73;")
         .unwrap();
     drop(connection);
     let before = files(&future);
