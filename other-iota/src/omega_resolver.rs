@@ -1,22 +1,30 @@
 use super::*;
 
 impl RemoteOmegaResolver {
-    fn known_locator(
+    async fn verified_authority(
         &self,
         authority: &AuthorityId,
-    ) -> Result<Option<AuthorityLocator>, IdentityError> {
+    ) -> Result<Option<(AuthorityLocator, DiscoveredAuthority)>, IdentityError> {
         let stored = match &self.authority_directory {
             Some(directory) => directory.locators_for(authority)?.into_iter().next(),
             None => None,
         };
-        Ok(stored.or_else(|| {
+        let locator = stored.or_else(|| {
             self.authorities.read().ok().and_then(|authorities| {
                 authorities
                     .iter()
                     .find(|(_, found)| &found.authority_id == authority)
                     .map(|(locator, _)| locator.clone())
             })
-        }))
+        });
+        let Some(locator) = locator else {
+            return Ok(None);
+        };
+        let discovered = self.client.discover(&locator).await?;
+        if discovered.service != AuthorityKind::Omega || &discovered.authority_id != authority {
+            return Err(IdentityError::KeyPinMismatch);
+        }
+        Ok(Some((locator, discovered)))
     }
 
     pub fn new(
@@ -186,15 +194,10 @@ impl IdentityResolver for RemoteOmegaResolver {
         if !principal.authority.as_str().starts_with("omega-key:") {
             return Err(IdentityError::NotFound);
         }
-        let locator = self
-            .known_locator(&principal.authority)?
+        let (locator, _) = self
+            .verified_authority(&principal.authority)
+            .await?
             .ok_or(IdentityError::NotFound)?;
-        let authority = self.client.discover(&locator).await?;
-        if authority.service != AuthorityKind::Omega
-            || authority.authority_id != principal.authority
-        {
-            return Err(IdentityError::KeyPinMismatch);
-        }
         let proof = self
             .client
             .file_signing_key(&locator, principal.user_id, key_id)
@@ -210,16 +213,10 @@ impl IdentityResolver for RemoteOmegaResolver {
         if !principal.authority.as_str().starts_with("omega-key:") {
             return Err(IdentityError::NotFound);
         }
-        let locator = self.known_locator(&principal.authority)?;
-        let Some(locator) = locator else {
+        let Some((locator, authority)) = self.verified_authority(&principal.authority).await?
+        else {
             return Err(IdentityError::NotFound);
         };
-        let authority = self.client.discover(&locator).await?;
-        if authority.service != AuthorityKind::Omega
-            || authority.authority_id != principal.authority
-        {
-            return Err(IdentityError::KeyPinMismatch);
-        }
         let current = self
             .refresh(
                 &locator,
