@@ -3,6 +3,8 @@ mod discovery;
 mod file_signing_key;
 mod identifiers;
 mod local_node;
+mod omega_locator;
+pub use omega_locator::OmegaLocatorProofV1;
 mod principal_descriptor;
 pub use file_signing_key::{FileSigningKeyProofV1, file_signing_key_id, valid_file_signing_key_id};
 pub use principal_descriptor::verify_dual_signature;

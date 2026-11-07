@@ -77,7 +77,25 @@ impl FederationIdentityClient for HttpFederationIdentityClient {
             .await
             .map_err(|e| IdentityError::Unavailable(e.to_string()))?;
         iota_util::federation_http::url(locator, "/.well-known/tensamin", self.allow_lan)?;
-        iota_util::authority_discovery::discover_authority(self.client(locator)?, locator).await
+        let authority =
+            iota_util::authority_discovery::discover_authority(self.client(locator)?, locator)
+                .await?;
+        if authority.service == AuthorityKind::Omega {
+            let url =
+                iota_util::federation_http::url(locator, "/federation/v1/locator", self.allow_lan)?;
+            let response = self
+                .client(locator)?
+                .get(url)
+                .send()
+                .await
+                .map_err(|error| IdentityError::Unavailable(error.to_string()))?
+                .error_for_status()
+                .map_err(|error| IdentityError::Unavailable(error.to_string()))?;
+            let proof: iota_identity::OmegaLocatorProofV1 =
+                iota_util::federation_http::bounded_json(response).await?;
+            proof.verify(locator, &authority.authority_id, now_millis())?;
+        }
+        Ok(authority)
     }
 
     async fn node_descriptor(
@@ -155,7 +173,13 @@ impl HttpFederationIdentityClient {
             })?
             .error_for_status()
             .map_err(|error| {
-                IdentityError::Unavailable(format!("federation request rejected {url}: {error}"))
+                if error.status() == Some(reqwest::StatusCode::NOT_FOUND) {
+                    IdentityError::NotFound
+                } else {
+                    IdentityError::Unavailable(format!(
+                        "federation request rejected {url}: {error}"
+                    ))
+                }
             })?;
         iota_util::federation_http::bounded_json(response).await
     }

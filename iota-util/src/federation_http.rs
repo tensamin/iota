@@ -108,6 +108,12 @@ pub async fn bounded_bytes(mut response: reqwest::Response) -> Result<Vec<u8>, I
             "federation redirects are disabled".into(),
         ));
     }
+    if !response.status().is_success() {
+        return Err(IdentityError::Unavailable(format!(
+            "federation request failed with status {}",
+            response.status()
+        )));
+    }
     if response
         .content_length()
         .is_some_and(|n| n > MAX_METADATA_BYTES as u64)

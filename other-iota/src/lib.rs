@@ -48,6 +48,7 @@ pub trait FederationIdentityClient: Send + Sync {
         ))
     }
 
+    /// Omega discovery must verify its signed locator binding against the request target.
     async fn discover(
         &self,
         locator: &AuthorityLocator,

@@ -192,6 +192,12 @@ impl IdentityResolver for RemoteOmegaResolver {
         let locator = self
             .known_locator(&principal.authority)?
             .ok_or(IdentityError::NotFound)?;
+        let authority = self.client.discover(&locator).await?;
+        if authority.service != AuthorityKind::Omega
+            || authority.authority_id != principal.authority
+        {
+            return Err(IdentityError::KeyPinMismatch);
+        }
         let proof = self
             .client
             .file_signing_key(&locator, principal.user_id, key_id)
