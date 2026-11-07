@@ -23,7 +23,7 @@ impl PeerManager {
                     if let Err(error) = iota_storage::util::files::maintenance() {
                         iota_logger::log!("File maintenance failed: {}",error);
                     }
-                    let jobs = match replication::jobs() {
+                    let jobs = match replication::jobs(None) {
                         Ok(jobs) => jobs,
                         Err(error) => { iota_logger::log!("Cannot load file replication jobs: {}",error); continue; }
                     };
@@ -42,6 +42,10 @@ impl PeerManager {
     }
 
     async fn transfer_file_ranges(self: &Arc<Self>, job: &Job) -> Result<(), String> {
+        if job.source_node == self.identity.node_id().as_str() {
+            return replication::copy_local_batch(job, || self.shutdown.is_cancelled())
+                .map_err(|e| e.to_string());
+        }
         let mut offset = replication::progress(job).map_err(|e| e.to_string())?;
         for _ in 0..16 {
             if offset == job.manifest.ciphertext_size {
@@ -49,12 +53,8 @@ impl PeerManager {
             }
             let mut request = job.request.clone();
             request.offset = offset;
-            let bytes = if job.source_node == self.identity.node_id().as_str() {
-                replication::read(&request, None).map_err(|e| e.to_string())?
-            } else {
-                let node = IotaNodeId::new(&job.source_node).map_err(|e| e.to_string())?;
-                self.request_file_range(&node, &request).await?
-            };
+            let node = IotaNodeId::new(&job.source_node).map_err(|e| e.to_string())?;
+            let bytes = self.request_file_range(&node, &request).await?;
             if bytes.is_empty() || bytes.len() > REPLICA_CHUNK_BYTES {
                 return Err("invalid replica range".into());
             }

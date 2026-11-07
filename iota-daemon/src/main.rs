@@ -894,6 +894,34 @@ async fn run() -> ExitCode {
             Ok(())
         }).await;
     }
+    if matches!(
+        web.federation_mode,
+        iota_storage::util::config_util::FederationMode::Private
+    ) {
+        let local_node = node_identity.node_id().as_str().to_owned();
+        let file_runtime = runtime.clone();
+        runtime.tasks.spawn_tracked("local-file-replication", async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(2));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! { _ = file_runtime.cancellation.cancelled() => break, _ = interval.tick() => {} }
+                let local_node = local_node.clone();
+                let cancellation = file_runtime.cancellation.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    use iota_storage::util::files::{self, replication};
+                    files::maintenance()?;
+                    for job in replication::jobs(Some(&local_node))? {
+                        if cancellation.is_cancelled() { break; }
+                        let result = replication::copy_local_batch(&job, || cancellation.is_cancelled());
+                        if result.is_err() { replication::failed(&job)?; }
+                    }
+                    Ok::<_, iota_storage::storage_error::StorageError>(())
+                }).await;
+                if !matches!(result, Ok(Ok(()))) { log!("Local file replication batch failed: {:?}", result); }
+            }
+            Ok(())
+        }).await;
+    }
     runtime.set_startup_phase(StartupPhase::Ready);
     log!("iota-daemon started (phase: Ready)");
 

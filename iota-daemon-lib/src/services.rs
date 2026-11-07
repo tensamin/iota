@@ -212,6 +212,12 @@ impl DaemonServices {
         let omega_host = omikron_connector::omega_discovery::omega_host();
         let locator = AuthorityLocator::new(omega_host)
             .expect("the configured Omega host is a valid authority locator");
+        let web = &iota_storage::util::config_util::CONFIG.load().web;
+        let federation_client: Arc<dyn other_iota::FederationIdentityClient> =
+            Arc::new(other_iota::HttpFederationIdentityClient::new(
+                web.allow_lan_federation,
+                web.allow_raw_ip_federation,
+            ));
         let identities: Arc<dyn IdentityResolver> =
             Arc::new(omikron_connector::identity::OmegaIdentityResolver::new(
                 client.clone(),
@@ -221,12 +227,7 @@ impl DaemonServices {
                 node_identity
                     .as_ref()
                     .and_then(|identity| identity.node_id()),
-            ));
-        let web = &iota_storage::util::config_util::CONFIG.load().web;
-        let federation_client: Arc<dyn other_iota::FederationIdentityClient> =
-            Arc::new(other_iota::HttpFederationIdentityClient::new(
-                web.allow_lan_federation,
-                web.allow_raw_ip_federation,
+                federation_client.clone(),
             ));
         let nodes: Arc<dyn NodeDirectory> =
             Arc::new(iota_storage::node_directory::SqliteNodeDirectory);
