@@ -142,6 +142,12 @@ pub async fn resolve_omega_principal(
         .ok_or_else(|| IdentityError::Unavailable("Omega signed identity is unavailable".into()))?;
     let wire: iota_identity::PrincipalDescriptorWireV1 = serde_json::from_slice(bytes)
         .map_err(|error| IdentityError::InvalidDescriptor(error.to_string()))?;
+    let proof = iota_identity::PrincipalProofV1 {
+        descriptor: wire.clone(),
+        authority_public_key: authority_keys
+            .try_to_base64()
+            .map_err(|error| IdentityError::InvalidDescriptor(error.to_string()))?,
+    };
     let home_node = wire
         .home_node
         .clone()
@@ -178,9 +184,11 @@ pub async fn resolve_omega_principal(
     {
         iota_storage::identity::bind_verified_omega_hosted_principal(&snapshot, node)?;
     }
-    principals
+    let mut resolved = principals
         .get_principal(handle)?
-        .ok_or(IdentityError::NotFound)
+        .ok_or(IdentityError::NotFound)?;
+    resolved.proof = Some(proof);
+    Ok(resolved)
 }
 
 #[async_trait]
@@ -409,6 +417,7 @@ mod tests {
             user_id: 7,
         };
         let resolved = ResolvedPrincipal {
+            proof: None,
             principal: principal.clone(),
             handle: PrincipalHandle(9),
             username: Some("cached-user".into()),
@@ -459,6 +468,7 @@ mod tests {
             );
         let store = CachedStore {
             resolved: ResolvedPrincipal {
+                proof: None,
                 principal: PrincipalId {
                     authority: authority.clone(),
                     user_id: 7,

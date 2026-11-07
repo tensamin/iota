@@ -34,7 +34,7 @@ impl NodeIdentityResolver for Offline {
 
 #[tokio::test]
 async fn deleted_owner_row_restores_original_copy_without_network_or_peer_copy_equality() {
-    let directory = std::path::Path::new("/tmp/opencode").join(format!(
+    let directory = std::env::temp_dir().join(format!(
         "tensamin-secret-coordinator-{}",
         uuid::Uuid::new_v4()
     ));

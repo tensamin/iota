@@ -107,8 +107,7 @@ async fn omega_lookups_overlap_at_ke1_and_ke3_and_fail_closed() {
         assert!(status.success());
         return;
     }
-    let directory =
-        std::path::Path::new("/tmp/opencode").join(format!("password-lookups-{}", Uuid::new_v4()));
+    let directory = std::env::temp_dir().join(format!("password-lookups-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&directory).unwrap();
     iota_util::file_util::configure_storage_directory(directory.clone());
     db::initialize_database().unwrap();

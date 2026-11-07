@@ -8,8 +8,21 @@ mod v67_initial_secret_proposals;
 mod v68_paged_sync;
 mod v69_sync_event_payloads;
 mod v70_files;
+mod v71_omega_authority_provenance;
+mod v72_incremental_sync;
+mod v73_file_signing_keys;
 
 use super::*;
+
+pub(super) fn verify_supported_schema(conn: &Connection) -> Result<i64, StorageError> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version > 73 {
+        return Err(StorageError::Other(format!(
+            "database schema {version} is newer than supported schema 73"
+        )));
+    }
+    Ok(version)
+}
 
 pub(super) fn run_migrations(pool: &r2d2::Pool<SqliteManager>) -> Result<(), StorageError> {
     let conn = pool.get().map_err(|e| StorageError::Pool(e.to_string()))?;
@@ -47,7 +60,7 @@ pub(super) fn add_table_column_if_missing(
 }
 
 pub(super) fn run_migrations_on_connection(conn: &Connection) -> Result<(), StorageError> {
-    let current_version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    let current_version = verify_supported_schema(conn)?;
 
     v01_to_v20::migrate(conn, current_version)?;
     v21_to_v30::migrate(conn, current_version)?;
@@ -67,5 +80,8 @@ pub(super) fn run_migrations_on_connection(conn: &Connection) -> Result<(), Stor
     v68_paged_sync::migrate(conn, current_version)?;
     v69_sync_event_payloads::migrate(conn, current_version)?;
     v70_files::migrate(conn, current_version)?;
+    v71_omega_authority_provenance::migrate(conn, current_version)?;
+    v72_incremental_sync::migrate(conn, current_version)?;
+    v73_file_signing_keys::migrate(conn, current_version)?;
     Ok(())
 }

@@ -175,7 +175,7 @@ fn stage_hook(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pinned_native_client_over_authenticated_mtp() {
     if std::env::var_os("NATIVE_RELAY_TEST_STAGE").is_none() {
-        let temporary = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let temporary = tempfile::tempdir().unwrap();
         let mut destination = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

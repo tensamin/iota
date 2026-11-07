@@ -51,6 +51,7 @@ fn create_pool_with_timeout(
     database_path: PathBuf,
     connection_timeout: Duration,
 ) -> Result<Arc<r2d2::Pool<SqliteManager>>, StorageError> {
+    migrations::verify_supported_schema(&Connection::open(&database_path)?)?;
     let legacy_path = database_path.with_file_name("e2ee.sqlite3");
     let manager = SqliteManager { database_path };
     let pool = r2d2::Pool::builder()
@@ -104,7 +105,9 @@ where
     blocking_region(|| {
         let pool = pool()?;
         let mut conn = pool.get().map_err(|e| StorageError::Pool(e.to_string()))?;
+        crate::util::sync::paged::prepare_transaction_capture(&conn)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM transaction_sync_events", [])?;
         let before: i64 = tx.query_row(
             "SELECT sequence FROM hosted_auth_changes WHERE singleton = 1",
             [],
@@ -115,9 +118,9 @@ where
             [],
             |row| row.get(0),
         )?;
-        let sync_heads = crate::util::sync::paged::transaction_heads(&tx)?;
         let value = f(&tx)?;
-        crate::util::sync::paged::capture_transaction_events(&tx, &sync_heads)?;
+        crate::util::sync::paged::capture_transaction_events(&tx)?;
+        tx.execute("DELETE FROM transaction_sync_events", [])?;
         let secret_changed: bool = tx.query_row(
             "SELECT sequence FROM chat_secret_changes WHERE singleton = 1",
             [],

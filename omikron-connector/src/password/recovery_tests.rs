@@ -67,8 +67,7 @@ async fn committed_password_receipts_and_health_survive_lost_responses() {
         assert!(status.success());
         return;
     }
-    let directory =
-        std::path::Path::new("/tmp/opencode").join(format!("password-receipt-{}", Uuid::new_v4()));
+    let directory = std::env::temp_dir().join(format!("password-receipt-{}", Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
     iota_util::file_util::configure_storage_directory(directory.clone());
     db::initialize_database().unwrap();

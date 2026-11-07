@@ -1,6 +1,48 @@
 use super::*;
 
 impl RemoteIotaResolver {
+    async fn known_locators(
+        &self,
+        authority: &AuthorityId,
+    ) -> Result<Vec<AuthorityLocator>, IdentityError> {
+        if !authority.as_str().starts_with("authority:iota:v1:") {
+            return Err(IdentityError::NotFound);
+        }
+        let mut locators = match &self.authority_directory {
+            Some(directory) => directory.locators_for(authority)?,
+            None => Vec::new(),
+        };
+        if let Ok(authorities) = self.authorities.read() {
+            for (locator, found) in authorities.iter() {
+                if &found.authority.authority_id == authority && !locators.contains(locator) {
+                    locators.push(locator.clone());
+                }
+            }
+        }
+        // Bootstrap only from node endpoints whose identity was already verified.
+        if let Some(node) = authority
+            .as_str()
+            .strip_prefix("authority:")
+            .and_then(|node| IotaNodeId::new(node).ok())
+            && AuthorityId::for_iota(&node) == *authority
+            && let Ok(node) = self.nodes.resolve_node(&node).await
+        {
+            for locator in node
+                .last_successful_endpoint
+                .iter()
+                .chain(node.direct_endpoints.iter())
+            {
+                if !locators.contains(locator) {
+                    locators.push(locator.clone());
+                }
+            }
+        }
+        if locators.is_empty() {
+            return Err(IdentityError::NotFound);
+        }
+        Ok(locators)
+    }
+
     pub fn new(
         client: Arc<dyn FederationIdentityClient>,
         principals: Arc<dyn PrincipalStore>,
@@ -272,11 +314,15 @@ impl RemoteIotaResolver {
         selector: &UserSelector,
     ) -> Result<ResolvedPrincipal, IdentityError> {
         let verified_node = self.refresh_node(locator, authority).await?;
-        let signed = self
-            .client
-            .principal_descriptor(locator, selector)
-            .await?
-            .parse()?;
+        let wire = self.client.principal_descriptor(locator, selector).await?;
+        let proof = iota_identity::PrincipalProofV1 {
+            descriptor: wire.clone(),
+            authority_public_key: authority
+                .public_keys
+                .try_to_base64()
+                .map_err(|error| IdentityError::InvalidDescriptor(error.to_string()))?,
+        };
+        let signed = wire.parse()?;
         match selector {
             UserSelector::UserId(user_id) if signed.descriptor.principal.user_id != *user_id => {
                 return Err(IdentityError::InvalidDescriptor(
@@ -303,9 +349,12 @@ impl RemoteIotaResolver {
             now_millis(),
         )?;
         let handle = self.principals.upsert_remote_descriptor(&verified)?;
-        self.principals
+        let mut resolved = self
+            .principals
             .get_principal(handle)?
-            .ok_or(IdentityError::NotFound)
+            .ok_or(IdentityError::NotFound)?;
+        resolved.proof = Some(proof);
+        Ok(resolved)
     }
 
     pub(super) fn cached(
@@ -327,47 +376,35 @@ impl RemoteIotaResolver {
 
 #[async_trait]
 impl IdentityResolver for RemoteIotaResolver {
+    async fn file_signing_key(
+        &self,
+        principal: &PrincipalId,
+        key_id: &str,
+    ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+        let mut unavailable = None;
+        for locator in self.known_locators(&principal.authority).await? {
+            match self
+                .client
+                .file_signing_key(&locator, principal.user_id, key_id)
+                .await
+            {
+                Ok(proof) => {
+                    proof.verify_file_key(principal, key_id)?;
+                    return Ok(proof);
+                }
+                Err(error @ IdentityError::Unavailable(_)) => unavailable = Some(error),
+                Err(IdentityError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(unavailable.unwrap_or(IdentityError::NotFound))
+    }
+
     async fn resolve_current_principal(
         &self,
         principal: &PrincipalId,
     ) -> Result<ResolvedPrincipal, IdentityError> {
-        let mut locators = match &self.authority_directory {
-            Some(directory) => directory.locators_for(&principal.authority)?,
-            None => Vec::new(),
-        };
-        if let Ok(authorities) = self.authorities.read() {
-            for (locator, authority) in authorities.iter() {
-                if authority.authority.authority_id == principal.authority
-                    && !locators.contains(locator)
-                {
-                    locators.push(locator.clone());
-                }
-            }
-        }
-        // An authenticated peer may ask about its principal before any user
-        // address lookup has populated the authority cache. Only a previously
-        // verified node directory entry supplies bootstrap endpoints here.
-        if let Some(node) = principal
-            .authority
-            .as_str()
-            .strip_prefix("authority:")
-            .and_then(|node| IotaNodeId::new(node).ok())
-            && AuthorityId::for_iota(&node) == principal.authority
-            && let Ok(node) = self.nodes.resolve_node(&node).await
-        {
-            for locator in node
-                .last_successful_endpoint
-                .iter()
-                .chain(node.direct_endpoints.iter())
-            {
-                if !locators.contains(locator) {
-                    locators.push(locator.clone());
-                }
-            }
-        }
-        if locators.is_empty() {
-            return Err(IdentityError::NotFound);
-        }
+        let locators = self.known_locators(&principal.authority).await?;
         let mut unavailable = None;
         for locator in locators {
             let result = async {
@@ -447,6 +484,13 @@ impl IdentityResolver for RemoteIotaResolver {
         principal: &PrincipalId,
         context: &ResolutionContext,
     ) -> Result<ResolvedPrincipal, IdentityError> {
+        if !principal
+            .authority
+            .as_str()
+            .starts_with("authority:iota:v1:")
+        {
+            return Err(IdentityError::NotFound);
+        }
         let cached = self.principals.get_by_canonical_id(principal)?;
         let now = now_millis();
         if let Some(cached) = cached.as_ref()

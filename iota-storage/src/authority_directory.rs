@@ -1,4 +1,7 @@
-use iota_identity::{AuthorityDirectory, AuthorityId, AuthorityLocator, IdentityError, IotaNodeId};
+use iota_identity::{
+    AuthorityDirectory, AuthorityId, AuthorityKind, AuthorityLocator, IdentityError, IotaNodeId,
+    VerifiedPrincipalDescriptor,
+};
 use rusqlite::{OptionalExtension, params};
 
 use crate::{storage_error::StorageError, util::db};
@@ -7,7 +10,7 @@ pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS federation_authorities (
     authority_id TEXT NOT NULL,
     locator TEXT NOT NULL UNIQUE,
-    node_id TEXT NOT NULL,
+    node_id TEXT,
     discovered_at INTEGER NOT NULL,
     verified_at INTEGER NOT NULL,
     source TEXT NOT NULL CHECK(source IN ('https_domain','explicit_pin','manual')),
@@ -21,6 +24,40 @@ ON federation_authorities(authority_id, is_preferred DESC, verified_at DESC);";
 pub struct SqliteAuthorityDirectory;
 
 impl AuthorityDirectory for SqliteAuthorityDirectory {
+    fn record_verified_omega(
+        &self,
+        locator: &AuthorityLocator,
+        verified: &VerifiedPrincipalDescriptor,
+    ) -> Result<(), IdentityError> {
+        let descriptor = verified.descriptor();
+        if descriptor.authority_kind != AuthorityKind::Omega
+            || !descriptor
+                .principal
+                .authority
+                .as_str()
+                .starts_with("omega-key:")
+        {
+            return Err(IdentityError::KeyPinMismatch);
+        }
+        let authority = &descriptor.principal.authority;
+        let verified_at = verified.resolved_at();
+        db::with_immediate_transaction(|tx| {
+            let current: Option<(String, Option<String>)> = tx.query_row(
+                "SELECT authority_id, node_id FROM federation_authorities WHERE locator = ?1",
+                [locator.as_str()], |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional()?;
+            let node_pin: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM node_endpoint_pins WHERE endpoint = ?1)", [locator.as_str()], |row| row.get(0))?;
+            if node_pin || current.is_some_and(|(id, node)| id != authority.as_str() || node.is_some()) {
+                return Err(StorageError::Other("authority locator conflicts with established pin".into()));
+            }
+            tx.execute("INSERT INTO federation_authorities(authority_id,locator,node_id,discovered_at,verified_at,source)
+                VALUES(?1,?2,NULL,?3,?3,?4)
+                ON CONFLICT(authority_id,locator) DO UPDATE SET verified_at = MAX(verified_at, excluded.verified_at)",
+                params![authority.as_str(),locator.as_str(),verified_at,if locator.is_ip_literal() { "explicit_pin" } else { "https_domain" }])?;
+            Ok(())
+        }).map_err(|error| IdentityError::Storage(error.to_string()))
+    }
+
     fn record_verified_iota(
         &self,
         locator: &AuthorityLocator,
@@ -36,12 +73,12 @@ impl AuthorityDirectory for SqliteAuthorityDirectory {
                 "SELECT node_id FROM node_endpoint_pins WHERE endpoint = ?1",
                 [locator.as_str()], |r| r.get(0),
             ).optional()?;
-            let current: Option<(String, String)> = tx.query_row(
+            let current: Option<(String, Option<String>)> = tx.query_row(
                 "SELECT authority_id, node_id FROM federation_authorities WHERE locator = ?1",
                 [locator.as_str()], |r| Ok((r.get(0)?, r.get(1)?)),
             ).optional()?;
             if pin.as_deref().is_some_and(|pin| pin != node.as_str())
-                || current.is_some_and(|(a, n)| a != authority.as_str() || n != node.as_str())
+                || current.is_some_and(|(a, n)| a != authority.as_str() || n.as_deref() != Some(node.as_str()))
             {
                 return Err(StorageError::Other("authority locator conflicts with established pin".into()));
             }

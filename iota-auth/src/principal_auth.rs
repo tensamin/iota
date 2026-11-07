@@ -335,6 +335,7 @@ mod tests {
                 return Err(IdentityError::NotFound);
             }
             Ok(ResolvedPrincipal {
+                proof: None,
                 principal: principal.clone(),
                 handle: PrincipalHandle(44),
                 username: Some("foreign-user".into()),
@@ -425,6 +426,7 @@ mod tests {
         };
         let identities = Arc::new(OneShotIdentity {
             resolved: ResolvedPrincipal {
+                proof: None,
                 principal: principal.clone(),
                 handle: PrincipalHandle(45),
                 username: None,

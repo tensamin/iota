@@ -110,7 +110,17 @@ pub fn handle_user_blob_put(cv: &CommunicationValue) -> BlobMutation {
             changed: None,
         };
     };
-    let expected_revision = data_i64(cv, DataType::ExpectedRevision);
+    let expected_revision = cv
+        .get_data(DataType::ExpectedRevision)
+        .and_then(DataValue::as_number)
+        .and_then(|value| i64::try_from(value).ok())
+        .filter(|value| *value >= 0);
+    if cv.get_data(DataType::ExpectedRevision).is_some() && expected_revision.is_none() {
+        return BlobMutation {
+            response: error_response(cv, CommunicationType::ErrorInvalidData),
+            changed: None,
+        };
+    }
     match user_blobs::put(user_id, &blob_id, &blob, expected_revision) {
         Ok(stored) => BlobMutation {
             response: blob_mutation_response(cv, CommunicationType::UserBlobPut, &stored),
@@ -145,7 +155,18 @@ pub fn handle_user_blob_delete(cv: &CommunicationValue) -> BlobMutation {
             changed: None,
         };
     };
-    match user_blobs::delete(user_id, &blob_id, data_i64(cv, DataType::ExpectedRevision)) {
+    let expected_revision = cv
+        .get_data(DataType::ExpectedRevision)
+        .and_then(DataValue::as_number)
+        .and_then(|value| i64::try_from(value).ok())
+        .filter(|value| *value >= 0);
+    if cv.get_data(DataType::ExpectedRevision).is_some() && expected_revision.is_none() {
+        return BlobMutation {
+            response: error_response(cv, CommunicationType::ErrorInvalidData),
+            changed: None,
+        };
+    }
+    match user_blobs::delete(user_id, &blob_id, expected_revision) {
         Ok(Some(deleted)) => BlobMutation {
             response: CommunicationValue::new(CommunicationType::UserBlobDelete)
                 .with_request_id(cv)
@@ -209,5 +230,45 @@ pub fn handle_user_blob_list(cv: &CommunicationValue) -> CommunicationValue {
                 .add_typed_default(DataType::Blobs, DataValue::Array(values))
         }
         Err(error) => internal_handler_error(cv, "user_blobs.list", error),
+    }
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_expected_revision_is_rejected_before_blob_storage() {
+        for value in [
+            DataValue::SignedNumber(-1),
+            DataValue::UnsignedNumber(u128::MAX),
+            DataValue::Str("0".into()),
+            DataValue::Bool(false),
+        ] {
+            for ty in [
+                CommunicationType::UserBlobPut,
+                CommunicationType::UserBlobDelete,
+            ] {
+                let request = CommunicationValue::new(ty)
+                    .with_sender(7)
+                    .with_id(11)
+                    .add_typed_default(DataType::BlobId, DataValue::Str("revision-test".into()))
+                    .add_typed_default(DataType::Blob, DataValue::Bytes(vec![1]))
+                    .add_typed_default(DataType::ExpectedRevision, value.clone());
+                let mutation = if ty == CommunicationType::UserBlobPut {
+                    handle_user_blob_put(&request)
+                } else {
+                    handle_user_blob_delete(&request)
+                };
+                assert!(
+                    mutation
+                        .response
+                        .is_type(CommunicationType::ErrorInvalidData),
+                    "{ty:?} with {value:?}"
+                );
+                assert_eq!(mutation.response.id(), Some(11));
+                assert!(mutation.changed.is_none());
+            }
+        }
     }
 }

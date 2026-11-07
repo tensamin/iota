@@ -7,8 +7,7 @@ use mtp::crypto::Keyring;
 
 #[test]
 fn omega_host_binding_requires_signed_snapshot_and_matching_live_account_key() {
-    let root = std::path::Path::new("/tmp/opencode")
-        .join(format!("omega-host-binding-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("omega-host-binding-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     iota_util::file_util::configure_storage_directory(root);
     db::initialize_database().unwrap();

@@ -1,35 +1,50 @@
-//! Materialized, expiring pages. Capture and authorization share one transaction;
-//! later writes cannot change an already issued page. Only explicit ack advances a checkpoint.
+//! Incremental pages over an expiring SQLite read view. Authorization is checked
+//! against current state on every request. Only explicit ack advances a checkpoint.
 use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use iota_identity::relay_protocol::sync::*;
 use rusqlite::{Connection, types::ValueRef};
 use serde_json::{Value, json};
+mod read_views;
 
 const TTL_MS: i64 = 10 * 60 * 1000;
-const MAX_ITEMS: i64 = 100_000;
-const MAX_BYTES: usize = 32 * 1024 * 1024;
 const ITEM_BYTES: usize = 256 * 1024;
 
-pub(crate) fn transaction_heads(tx: &Transaction<'_>) -> Result<BTreeMap<i64, i64>, StorageError> {
-    tx.prepare("SELECT user_id,version FROM sync_heads")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<Result<_, _>>()
-        .map_err(Into::into)
+pub(crate) fn prepare_transaction_capture(connection: &Connection) -> Result<(), StorageError> {
+    connection.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS transaction_sync_events (
+            user_id INTEGER NOT NULL, version INTEGER NOT NULL,
+            PRIMARY KEY(user_id, version)
+         );
+         CREATE TEMP TRIGGER IF NOT EXISTS capture_transaction_sync_events
+         AFTER INSERT ON main.sync_events BEGIN
+            INSERT OR IGNORE INTO transaction_sync_events VALUES (NEW.user_id, NEW.version);
+         END;",
+    )?;
+    Ok(())
 }
 
 /// Freeze post-transaction projections before the transaction can establish
 /// acceptance. Multiple changes to one row in a transaction share its final
 /// projection. No intermediate state was observable outside that transaction.
-pub(crate) fn capture_transaction_events(
-    tx: &Transaction<'_>,
-    before: &BTreeMap<i64, i64>,
-) -> Result<(), StorageError> {
-    for (owner, head) in transaction_heads(tx)? {
-        let after = before.get(&owner).copied().unwrap_or(0);
-        if head <= after {
-            continue;
-        }
+pub(crate) fn capture_transaction_events(tx: &Transaction<'_>) -> Result<(), StorageError> {
+    let mut touched = BTreeMap::<i64, Vec<(i64, String, i64)>>::new();
+    let mut statement = tx.prepare(
+        "SELECT s.user_id,s.version,s.entity_type,s.entity_id FROM transaction_sync_events t
+         JOIN sync_events s ON s.user_id=t.user_id AND s.version=t.version
+         ORDER BY s.user_id,s.version",
+    )?;
+    for row in statement.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })? {
+        let (owner, version, entity, key) = row?;
+        touched
+            .entry(owner)
+            .or_default()
+            .push((version, entity, key));
+    }
+    drop(statement);
+    for (owner, events) in touched {
         let identity: Option<(String,i64,i64)> = tx.query_row(
             "SELECT p.authority_id,p.remote_user_id,a.generation FROM hosted_principals h
              JOIN principals p ON p.principal_pk=h.principal_handle JOIN hosted_auth_state a ON a.local_user_id=h.local_user_id
@@ -46,16 +61,6 @@ pub(crate) fn capture_transaction_events(
         };
         let canonical = String::from_utf8(serialize(&principal)?)
             .map_err(|error| StorageError::Other(error.to_string()))?;
-        let mut statement = tx.prepare("SELECT version,entity_type,entity_id FROM sync_events WHERE user_id=?1 AND version>?2 ORDER BY version")?;
-        let events = statement
-            .query_map(params![owner, after], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
         for (sequence, entity, key) in events {
             let operation: String = tx.query_row("SELECT operation FROM sync_events WHERE user_id=?1 AND entity_type=?2 AND entity_id=?3 ORDER BY version DESC LIMIT 1",
                 params![owner,entity,key], |row| row.get(0))?;
@@ -110,6 +115,7 @@ pub fn execute(owner: i64, request: &Request) -> Result<Response, StorageError> 
         });
     }
     // Protocol failures must not commit a partially materialized snapshot.
+    let mut allocated = None;
     let outcome = db::with_immediate_transaction(|tx| {
         if let Some(scope) = request.scope() {
             authorize(tx, owner, scope).map_err(protocol_error)?;
@@ -146,24 +152,21 @@ pub fn execute(owner: i64, request: &Request) -> Result<Response, StorageError> 
                 authorize(tx, owner, &scope).map_err(protocol_error)?;
                 Ok(Response::Scope { scope })
             }
-            Request::Snapshot { scope, page, limit } => {
-                page_response(tx, owner, scope, "snapshot", 0, page, *limit)
+            Request::Snapshot { .. } | Request::Delta { .. } => {
+                page_response(tx, owner, request, &mut allocated)
             }
-            Request::Delta { after, page, limit } => page_response(
-                tx,
-                owner,
-                &after.scope,
-                "delta",
-                after.sequence,
-                page,
-                *limit,
-            ),
             Request::Acknowledge { cursor, page_id } => acknowledge(tx, owner, cursor, page_id),
         }
     });
+    if outcome.is_err()
+        && let Some(id) = allocated
+    {
+        read_views::remove(&id);
+    }
     if let (Request::Acknowledge { page_id, .. }, Ok(Response::Acknowledged { .. })) =
         (request, &outcome)
     {
+        read_views::remove(page_id);
         super::super::relay_work::fault_point("after_sync_acknowledgment_commit", page_id);
     }
     match outcome {
@@ -227,26 +230,58 @@ fn serialize(value: &impl serde::Serialize) -> Result<Vec<u8>, StorageError> {
 fn page_response(
     tx: &Transaction<'_>,
     owner: i64,
-    scope: &Scope,
-    kind: &str,
-    after: i64,
-    token: &Option<PageToken>,
-    limit: usize,
+    request: &Request,
+    allocated: &mut Option<String>,
 ) -> Result<Response, StorageError> {
+    let (scope, kind, after, token, limit) = match request {
+        Request::Snapshot { scope, page, limit } => (scope, "snapshot", 0, page, *limit),
+        Request::Delta { after, page, limit } => {
+            (&after.scope, "delta", after.sequence, page, *limit)
+        }
+        _ => return Err(protocol_error(SyncError::InvalidRequest)),
+    };
     let scope_json = String::from_utf8(serialize(scope)?)
         .map_err(|error| StorageError::Other(error.to_string()))?;
     let (id, offset) = match token {
         Some(token) => (token.id.clone(), token.offset),
-        None => (capture(tx, owner, scope, &scope_json, kind, after)?, 0),
+        None => {
+            let id = capture(tx, owner, &scope_json, kind, after)?;
+            *allocated = Some(id.clone());
+            (id, 0)
+        }
     };
     let boundary: Option<(i64,i64,i64,i64)> = tx.query_row(
         "SELECT head,floor,item_count,issued_through FROM account_sync_pages WHERE id=?1 AND user_id=?2 AND scope=?3 AND kind=?4 AND after_sequence=?5 AND expires_at>?6",
         params![id,owner,scope_json,kind,after,now_millis()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
     ).optional()?;
-    let (head, floor, count, issued) =
+    let (head, floor, mut count, issued) =
         boundary.ok_or_else(|| protocol_error(SyncError::SnapshotRequired))?;
-    if offset > issued || offset > count {
+    // Persisted page rows cannot recreate a lost SQLite read boundary after a
+    // process restart, even when the requested prefix was already issued.
+    read_views::read(&id, |_| Ok(()))?;
+    if offset > issued || count >= 0 && offset > count {
         return Err(protocol_error(SyncError::InvalidRequest));
+    }
+    if offset == issued
+        && count < 0
+        && extend_page(
+            tx,
+            owner,
+            scope,
+            kind,
+            head,
+            &PageToken {
+                id: id.clone(),
+                offset: issued,
+            },
+            limit,
+        )?
+    {
+        count = tx.query_row(
+            "SELECT item_count FROM account_sync_pages WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )?;
     }
     let mut statement = tx.prepare("SELECT payload FROM account_sync_page_items WHERE page_id=?1 AND position>=?2 ORDER BY position LIMIT ?3")?;
     let mut items = Vec::new();
@@ -266,10 +301,10 @@ fn page_response(
     }
     let end = offset + items.len() as i64;
     tx.execute(
-        "UPDATE account_sync_pages SET issued_through=MAX(issued_through,?2) WHERE id=?1",
-        params![id, end],
+        "UPDATE account_sync_pages SET issued_through=MAX(issued_through,?2),expires_at=?3 WHERE id=?1",
+        params![id, end, now_millis()+TTL_MS],
     )?;
-    let next = (end < count).then(|| PageToken {
+    let next = (count < 0 || end < count).then(|| PageToken {
         id: id.clone(),
         offset: end,
     });
@@ -307,7 +342,6 @@ fn page_response(
 fn capture(
     tx: &Transaction<'_>,
     owner: i64,
-    scope: &Scope,
     scope_json: &str,
     kind: &str,
     after: i64,
@@ -346,111 +380,192 @@ fn capture(
         return Err(protocol_error(SyncError::Capacity));
     }
     let id = uuid::Uuid::new_v4().to_string();
-    tx.execute("INSERT INTO account_sync_pages(id,user_id,scope,kind,after_sequence,head,floor,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![id,owner,scope_json,kind,after,head,floor,now_millis()+TTL_MS])?;
-    let mut position = 0i64;
-    let mut size = 0usize;
-    let mut insert = |value: Value| -> Result<(), StorageError> {
-        let payload = serialize(&value)?;
-        size = size.saturating_add(payload.len());
-        if position >= MAX_ITEMS || size > MAX_BYTES || payload.len() > ITEM_BYTES {
-            return Err(protocol_error(SyncError::Capacity));
+    tx.execute("INSERT INTO account_sync_pages(id,user_id,scope,kind,after_sequence,head,floor,expires_at,item_count) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,-1)", params![id,owner,scope_json,kind,after,head,floor,now_millis()+TTL_MS])?;
+    tx.execute(
+        "INSERT INTO account_sync_page_progress(page_id,row_id) VALUES(?1,?2)",
+        params![id, after],
+    )?;
+    read_views::capture(tx, &id, owner, head)?;
+    Ok(id)
+}
+
+fn extend_page(
+    tx: &Transaction<'_>,
+    owner: i64,
+    scope: &Scope,
+    kind: &str,
+    head: i64,
+    page: &PageToken,
+    limit: usize,
+) -> Result<bool, StorageError> {
+    let id = page.id.as_str();
+    let issued = page.offset;
+    let (table, mut row_id): (i64, i64) = tx.query_row(
+        "SELECT table_index,row_id FROM account_sync_page_progress WHERE page_id=?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let mut table = usize::try_from(table)
+        .ok()
+        .filter(|table| *table <= TABLES.len())
+        .ok_or_else(|| protocol_error(SyncError::InvalidRequest))?;
+    let (payloads, complete) = read_views::read(id, |connection| {
+        let mut payloads = Vec::new();
+        let mut size = 0;
+        let mut complete = false;
+        while payloads.len() < limit {
+            let mut next_table = table;
+            let mut next_row = row_id;
+            let value = if kind == "snapshot" {
+                snapshot_next(connection, owner, scope, &mut next_table, &mut next_row)?
+            } else {
+                delta_next(connection, owner, scope, head, &mut next_row)?
+            };
+            let Some(value) = value else {
+                complete = true;
+                break;
+            };
+            let payload = serialize(&value)?;
+            if payload.len() > ITEM_BYTES {
+                return Err(protocol_error(SyncError::Capacity));
+            }
+            if size + payload.len() > PAGE_BYTES / 2 {
+                break;
+            }
+            size += payload.len();
+            payloads.push(payload);
+            table = next_table;
+            row_id = next_row;
         }
+        Ok((payloads, complete))
+    })?;
+    for (offset, payload) in payloads.iter().enumerate() {
         tx.execute(
             "INSERT INTO account_sync_page_items VALUES(?1,?2,?3)",
-            params![id, position, payload],
+            params![id, issued + offset as i64, payload],
         )?;
-        position += 1;
-        Ok(())
-    };
-    if kind == "snapshot" {
-        for (entity, table, owner_column) in TABLES {
-            if *entity == "chat_secret" {
-                continue;
-            }
-            let sql = format!(
-                "SELECT rowid AS entity_rowid,{} FROM {table} WHERE {owner_column}=?1 ORDER BY rowid",
-                columns(entity)
-            );
-            let mut statement = tx.prepare(&sql)?;
-            let mut rows = statement.query([owner])?;
-            while let Some(row) = rows.next()? {
-                insert(
-                    serde_json::to_value(record(tx, row, entity, &scope.principal)?)
-                        .map_err(|error| StorageError::Other(error.to_string()))?,
-                )?;
-            }
-        }
-        let principal_json = String::from_utf8(serialize(&scope.principal)?)
-            .map_err(|error| StorageError::Other(error.to_string()))?;
-        let mut statement = tx.prepare("SELECT first_principal,second_principal,version FROM chat_secret_epochs WHERE state='committed' AND (first_principal=?1 OR second_principal=?1) ORDER BY first_principal,second_principal,version")?;
-        let mut rows = statement.query([principal_json])?;
-        while let Some(row) = rows.next()? {
-            let first: String = row.get(0)?;
-            let second: String = row.get(1)?;
-            let epoch: i64 = row.get(2)?;
-            let first = serde_json::from_str(&first)
-                .map_err(|_| protocol_error(SyncError::InvalidRequest))?;
-            let second = serde_json::from_str(&second)
-                .map_err(|_| protocol_error(SyncError::InvalidRequest))?;
-            let pair = iota_identity::relay_protocol::ConversationPair::new(first, second)
-                .map_err(|_| protocol_error(SyncError::InvalidRequest))?;
-            let chat = pair
-                .chat_id()
-                .map_err(|_| protocol_error(SyncError::InvalidRequest))?;
-            let available: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM chat_secrets WHERE user_id=?1 AND chat_id=?2 AND version=?3)",params![owner.to_string(),chat,epoch],|row| row.get(0))?;
-            insert(serde_json::to_value(Record { entity:Entity::ChatSecret,key:format!("{chat}:{epoch}"),
-                value:json!({"chat_id":chat,"secret_id":iota_identity::relay_protocol::chat_secret_id(&chat),"version":epoch.to_string(),
-                    "availability":if available {"owner_envelope_present"} else {"accepted_but_envelope_unavailable"}}) })
-                .map_err(|error| StorageError::Other(error.to_string()))?)?;
-        }
-    } else {
-        let principal = String::from_utf8(serialize(&scope.principal)?)
-            .map_err(|error| StorageError::Other(error.to_string()))?;
-        let mut statement = tx.prepare("SELECT version,projection,projection_principal,projection_generation,projection_dictionary FROM sync_events WHERE user_id=?1 AND version>?2 AND version<=?3 ORDER BY version")?;
-        let mut rows = statement.query(params![owner, after, head])?;
-        let mut expected = after;
-        while let Some(row) = rows.next()? {
-            let sequence: i64 = row.get(0)?;
-            if expected.checked_add(1) != Some(sequence) {
-                return Err(protocol_error(SyncError::SnapshotRequired));
-            }
-            expected = sequence;
-            let payload: Option<Vec<u8>> = row.get(1)?;
-            let owner_principal: Option<String> = row.get(2)?;
-            let generation: Option<i64> = row.get(3)?;
-            let dictionary: Option<String> = row.get(4)?;
-            if owner_principal.as_deref() != Some(&principal)
-                || generation != Some(scope.authorization_generation)
-                || !dictionary.as_deref().is_some_and(|dictionary| {
-                    iota_identity::relay_protocol::sync::dictionaries_compatible(
-                        dictionary,
-                        &scope.dictionary,
-                    )
-                })
-            {
-                return Err(protocol_error(SyncError::SnapshotRequired));
-            }
-            let event: Event = serde_json::from_slice(
-                &payload.ok_or_else(|| protocol_error(SyncError::SnapshotRequired))?,
-            )
-            .map_err(|_| protocol_error(SyncError::SnapshotRequired))?;
-            if event.sequence != sequence {
-                return Err(protocol_error(SyncError::SnapshotRequired));
-            }
-            insert(
-                serde_json::to_value(event)
-                    .map_err(|error| StorageError::Other(error.to_string()))?,
-            )?;
-        }
-        if expected != head {
-            return Err(protocol_error(SyncError::SnapshotRequired));
-        }
     }
     tx.execute(
-        "UPDATE account_sync_pages SET item_count=?2 WHERE id=?1",
-        params![id, position],
+        "UPDATE account_sync_page_progress SET table_index=?2,row_id=?3 WHERE page_id=?1",
+        params![id, table as i64, row_id],
     )?;
-    Ok(id)
+    if complete {
+        tx.execute(
+            "UPDATE account_sync_pages SET item_count=?2 WHERE id=?1",
+            params![id, issued + payloads.len() as i64],
+        )?;
+    }
+    Ok(complete)
+}
+
+fn snapshot_next(
+    connection: &Connection,
+    owner: i64,
+    scope: &Scope,
+    table_index: &mut usize,
+    row_id: &mut i64,
+) -> Result<Option<Value>, StorageError> {
+    while let Some((entity, table, owner_column)) = TABLES.get(*table_index) {
+        if *entity != "chat_secret" {
+            let mut statement = connection.prepare(&format!(
+                "SELECT rowid AS entity_rowid,{} FROM {table} WHERE {owner_column}=?1 AND rowid>?2 ORDER BY rowid LIMIT 1", columns(entity)
+            ))?;
+            let mut rows = statement.query(params![owner, *row_id])?;
+            if let Some(row) = rows.next()? {
+                *row_id = row.get(0)?;
+                return Ok(Some(
+                    serde_json::to_value(record(connection, row, entity, &scope.principal)?)
+                        .map_err(|error| StorageError::Other(error.to_string()))?,
+                ));
+            }
+        }
+        *table_index += 1;
+        *row_id = 0;
+    }
+    let principal_json = String::from_utf8(serialize(&scope.principal)?)
+        .map_err(|error| StorageError::Other(error.to_string()))?;
+    let mut statement = connection.prepare(
+        "SELECT * FROM (
+        SELECT rowid,first_principal,second_principal,version FROM chat_secret_epochs
+        WHERE state='committed' AND first_principal=?1 AND rowid>?2 ORDER BY rowid LIMIT 1
+        ) UNION ALL SELECT * FROM (
+        SELECT rowid,first_principal,second_principal,version FROM chat_secret_epochs
+        WHERE state='committed' AND second_principal=?1 AND rowid>?2 ORDER BY rowid LIMIT 1
+        ) ORDER BY rowid LIMIT 1",
+    )?;
+    let mut rows = statement.query(params![principal_json, *row_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    *row_id = row.get(0)?;
+    let first: String = row.get(1)?;
+    let second: String = row.get(2)?;
+    let epoch: i64 = row.get(3)?;
+    let first =
+        serde_json::from_str(&first).map_err(|_| protocol_error(SyncError::InvalidRequest))?;
+    let second =
+        serde_json::from_str(&second).map_err(|_| protocol_error(SyncError::InvalidRequest))?;
+    let pair = iota_identity::relay_protocol::ConversationPair::new(first, second)
+        .map_err(|_| protocol_error(SyncError::InvalidRequest))?;
+    let chat = pair
+        .chat_id()
+        .map_err(|_| protocol_error(SyncError::InvalidRequest))?;
+    let available: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM chat_secrets WHERE user_id=?1 AND chat_id=?2 AND version=?3)",
+        params![owner.to_string(), chat, epoch],
+        |row| row.get(0),
+    )?;
+    Ok(Some(serde_json::to_value(Record { entity:Entity::ChatSecret,key:format!("{chat}:{epoch}"),
+        value:json!({"chat_id":chat,"secret_id":iota_identity::relay_protocol::chat_secret_id(&chat),"version":epoch.to_string(),
+            "availability":if available {"owner_envelope_present"} else {"accepted_but_envelope_unavailable"}})
+    }).map_err(|error| StorageError::Other(error.to_string()))?))
+}
+
+fn delta_next(
+    connection: &Connection,
+    owner: i64,
+    scope: &Scope,
+    head: i64,
+    sequence: &mut i64,
+) -> Result<Option<Value>, StorageError> {
+    if *sequence == head {
+        return Ok(None);
+    }
+    let principal = String::from_utf8(serialize(&scope.principal)?)
+        .map_err(|error| StorageError::Other(error.to_string()))?;
+    let mut statement = connection.prepare("SELECT version,projection,projection_principal,projection_generation,projection_dictionary FROM sync_events WHERE user_id=?1 AND version>?2 AND version<=?3 ORDER BY version LIMIT 1")?;
+    let mut rows = statement.query(params![owner, *sequence, head])?;
+    let row = rows
+        .next()?
+        .ok_or_else(|| protocol_error(SyncError::SnapshotRequired))?;
+    let next: i64 = row.get(0)?;
+    let payload: Option<Vec<u8>> = row.get(1)?;
+    let owner_principal: Option<String> = row.get(2)?;
+    let generation: Option<i64> = row.get(3)?;
+    let dictionary: Option<String> = row.get(4)?;
+    if sequence.checked_add(1) != Some(next)
+        || owner_principal.as_deref() != Some(&principal)
+        || generation != Some(scope.authorization_generation)
+        || !dictionary.as_deref().is_some_and(|dictionary| {
+            iota_identity::relay_protocol::sync::dictionaries_compatible(
+                dictionary,
+                &scope.dictionary,
+            )
+        })
+    {
+        return Err(protocol_error(SyncError::SnapshotRequired));
+    }
+    let event: Event = serde_json::from_slice(
+        &payload.ok_or_else(|| protocol_error(SyncError::SnapshotRequired))?,
+    )
+    .map_err(|_| protocol_error(SyncError::SnapshotRequired))?;
+    if event.sequence != next {
+        return Err(protocol_error(SyncError::SnapshotRequired));
+    }
+    *sequence = next;
+    serde_json::to_value(event)
+        .map(Some)
+        .map_err(|error| StorageError::Other(error.to_string()))
 }
 
 // Only account application state belongs here. Credentials, proof material,
@@ -667,7 +782,7 @@ fn columns(entity: &str) -> &'static str {
             "id,principal_handle,user_name,created_at,last_message_at,notifications,notifications_read_at"
         }
         "setting" => "id,scope_type,scope_key,name,payload,revision,deleted",
-        "user_blob" => "id,blob_id,blob,revision,deleted,updated_at",
+        "user_blob" => "id,blob_id,length(blob) AS size,revision,deleted,updated_at",
         "chat_secret" => "chat_id,secret_id,version,wrapping_scheme,created_at,updated_at",
         "blocked_user" => "id,blocked_principal,revision,created_at",
         "receipt_policy" => "user_id,send_read_receipts,send_received_receipts,revision,updated_at",

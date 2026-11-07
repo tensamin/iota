@@ -1,8 +1,10 @@
 mod addresses;
 mod discovery;
+mod file_signing_key;
 mod identifiers;
 mod local_node;
 mod principal_descriptor;
+pub use file_signing_key::{FileSigningKeyProofV1, file_signing_key_id, valid_file_signing_key_id};
 pub use principal_descriptor::verify_dual_signature;
 use principal_descriptor::{push_bytes, push_optional_i64, verify_authority_signature};
 mod node_descriptor;
@@ -194,6 +196,15 @@ pub struct ResolvedPrincipal {
     pub descriptor_revision: i64,
     pub valid_until: Option<i64>,
     pub resolved_at: i64,
+    pub proof: Option<PrincipalProofV1>,
+}
+
+/// Original authority-signed identity evidence, retained only by fresh resolution.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrincipalProofV1 {
+    pub descriptor: PrincipalDescriptorWireV1,
+    pub authority_public_key: String,
 }
 
 impl ResolvedPrincipal {
@@ -257,6 +268,14 @@ pub struct VerifiedPrincipalSnapshot {
 }
 
 pub trait LocalDescriptorPublisher: Send + Sync {
+    fn file_signing_key(
+        &self,
+        _: LocalUserId,
+        _: &str,
+    ) -> Result<FileSigningKeyProofV1, IdentityError> {
+        Err(IdentityError::NotFound)
+    }
+
     fn principal_descriptor(
         &self,
         user: LocalUserId,
@@ -387,6 +406,12 @@ pub trait NodeIdentityResolver: Send + Sync {
 
 /// Verified discovery provenance. A locator cannot silently change authority or node.
 pub trait AuthorityDirectory: Send + Sync {
+    fn record_verified_omega(
+        &self,
+        locator: &AuthorityLocator,
+        descriptor: &VerifiedPrincipalDescriptor,
+    ) -> Result<(), IdentityError>;
+
     fn record_verified_iota(
         &self,
         locator: &AuthorityLocator,
@@ -484,6 +509,15 @@ impl std::error::Error for IdentityError {}
 
 #[async_trait]
 pub trait IdentityResolver: Send + Sync {
+    /// File-signature evidence only. Never use this key to authorize a relay.
+    async fn file_signing_key(
+        &self,
+        _: &PrincipalId,
+        _: &str,
+    ) -> Result<FileSigningKeyProofV1, IdentityError> {
+        Err(IdentityError::NotFound)
+    }
+
     /// Refresh authoritative ownership, home, and keys. A cached descriptor is
     /// never sufficient for recovery disclosure or an initialization negative.
     async fn resolve_current_principal(
