@@ -104,9 +104,8 @@ fence also covers receipt pages before sending account data to a client.
 
 ## Canonical relay delivery
 
-The connector accepts only negotiated V2 relay frames. Historical queue records
-are quarantined by schema migration 54. The connector does not decode, backfill,
-or apply historical sealed relay content.
+The connector accepts only negotiated V2 relay frames and current queue records.
+It does not decode, backfill, or apply historical sealed relay content.
 
 Install the process relay service with `install_relay_service` and the client
 manager with `install_local_delivery_sink`. Install its correlated pending

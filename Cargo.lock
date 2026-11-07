@@ -2317,6 +2317,7 @@ dependencies = [
  "serde_json",
  "tau",
  "tau-relay-protocol",
+ "tempfile",
  "tokio",
  "uuid",
 ]

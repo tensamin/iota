@@ -28,12 +28,22 @@ impl PeerManager {
                         Err(error) => { iota_logger::log!("Cannot load file replication jobs: {}",error); continue; }
                     };
                     for job in jobs {
-                        let result = tokio::select! {
-                            _ = manager.shutdown.cancelled() => return,
-                            result = tokio::time::timeout(std::time::Duration::from_secs(30),manager.transfer_file_ranges(&job)) => result,
+                        let result = if job.source_node == manager.identity.node_id().as_str() {
+                            manager.copy_local_file(job.clone()).await
+                        } else {
+                            tokio::select! {
+                                _ = manager.shutdown.cancelled() => return,
+                                result = tokio::time::timeout(std::time::Duration::from_secs(30),manager.transfer_file_ranges(&job)) => {
+                                    result.map_err(|_| "file replication timed out".to_string()).and_then(|result| result)
+                                }
+                            }
                         };
-                        if !matches!(result,Ok(Ok(()))) {
-                            let _ = replication::failed(&job);
+                        if manager.shutdown.is_cancelled() { return; }
+                        if let Err(error) = result {
+                            iota_logger::log!("File replication job {} failed: {}", job.id, error);
+                            if let Err(error) = replication::failed(&job) {
+                                iota_logger::log!("Cannot mark file replication job {} failed: {}", job.id, error);
+                            }
                         }
                     }
                 }
@@ -41,11 +51,29 @@ impl PeerManager {
         }
     }
 
-    async fn transfer_file_ranges(self: &Arc<Self>, job: &Job) -> Result<(), String> {
-        if job.source_node == self.identity.node_id().as_str() {
-            return replication::copy_local_batch(job, || self.shutdown.is_cancelled())
-                .map_err(|e| e.to_string());
+    async fn copy_local_file(&self, job: Job) -> Result<(), String> {
+        let cancellation = self.shutdown.child_token();
+        let worker_cancellation = cancellation.clone();
+        let mut copy = tokio::task::spawn_blocking(move || {
+            replication::copy_local_batch(&job, || worker_cancellation.is_cancelled())
+        });
+        tokio::select! {
+            _ = self.shutdown.cancelled() => {}
+            result = tokio::time::timeout(std::time::Duration::from_secs(30), &mut copy) => {
+                if let Ok(result) = result {
+                    return result.map_err(|error| error.to_string())?.map_err(|error| error.to_string());
+                }
+            }
         }
+        cancellation.cancel();
+        // Dropping a blocking task would detach it and let a retry overlap the copy.
+        copy.await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        Err("local file replication interrupted".into())
+    }
+
+    async fn transfer_file_ranges(self: &Arc<Self>, job: &Job) -> Result<(), String> {
         let mut offset = replication::progress(job).map_err(|e| e.to_string())?;
         for _ in 0..16 {
             if offset == job.manifest.ciphertext_size {

@@ -912,8 +912,12 @@ async fn run() -> ExitCode {
                     files::maintenance()?;
                     for job in replication::jobs(Some(&local_node))? {
                         if cancellation.is_cancelled() { break; }
-                        let result = replication::copy_local_batch(&job, || cancellation.is_cancelled());
-                        if result.is_err() { replication::failed(&job)?; }
+                        if let Err(error) = replication::copy_local_batch(&job, || cancellation.is_cancelled()) {
+                            log!("Local file replication job {} failed: {}", job.id, error);
+                            if let Err(error) = replication::failed(&job) {
+                                log!("Cannot mark local file replication job {} failed: {}", job.id, error);
+                            }
+                        }
                     }
                     Ok::<_, iota_storage::storage_error::StorageError>(())
                 }).await;

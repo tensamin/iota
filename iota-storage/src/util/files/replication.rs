@@ -1,6 +1,7 @@
 use super::*;
 use crate::util::user_assets;
 
+#[derive(Clone)]
 pub struct Job {
     pub id: i64,
     pub owner: i64,
