@@ -110,9 +110,6 @@ async fn main() {
         if let Err(_) = user_manager::load_users_sync() {
             log_t!("user_load_failed");
         }
-        if let Err(e) = iota_storage::util::settings::migrate_legacy_files() {
-            log!("Failed to migrate legacy settings: {}", e);
-        }
 
         let mut sb = "".to_string();
 

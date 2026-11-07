@@ -20,7 +20,7 @@ fn probe(directory: &Path, mode: &str, backup: &Path) {
     let status = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "startup_refuses_corruption_prior_recovery_and_future_schemas_until_explicit_restore",
+            "startup_refuses_corruption_and_prior_recovery_until_explicit_restore",
             "--nocapture",
         ])
         .env("IOTA_RECOVERY_PROBE_DIRECTORY", directory)
@@ -32,7 +32,7 @@ fn probe(directory: &Path, mode: &str, backup: &Path) {
 }
 
 #[test]
-fn startup_refuses_corruption_prior_recovery_and_future_schemas_until_explicit_restore() {
+fn startup_refuses_corruption_and_prior_recovery_until_explicit_restore() {
     if let Ok(directory) = std::env::var("IOTA_RECOVERY_PROBE_DIRECTORY") {
         let directory = std::path::PathBuf::from(directory);
         iota_util::file_util::configure_storage_directory(directory.clone());
@@ -53,21 +53,6 @@ fn startup_refuses_corruption_prior_recovery_and_future_schemas_until_explicit_r
                     db::verify_and_backup_database()
                         .and_then(|()| db::initialize_database())
                         .is_err()
-                );
-                assert!(db::pool().is_err());
-            }
-            "future" => {
-                assert!(
-                    db::verify_and_backup_database()
-                        .unwrap_err()
-                        .to_string()
-                        .contains("newer than supported")
-                );
-                assert!(
-                    db::initialize_database()
-                        .unwrap_err()
-                        .to_string()
-                        .contains("newer than supported")
                 );
                 assert!(db::pool().is_err());
             }
@@ -118,24 +103,6 @@ fn startup_refuses_corruption_prior_recovery_and_future_schemas_until_explicit_r
     }
     assert!(!prior_recovery.join("messages.sqlite3").exists());
     assert_eq!(files(&recovery), retained);
-
-    let future = temporary.path().join("future");
-    std::fs::create_dir(&future).unwrap();
-    std::fs::copy(
-        backup.join("messages.sqlite3"),
-        future.join("messages.sqlite3"),
-    )
-    .unwrap();
-    let connection = rusqlite::Connection::open(future.join("messages.sqlite3")).unwrap();
-    connection
-        .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA user_version=74;")
-        .unwrap();
-    drop(connection);
-    let before = files(&future);
-    for _ in 0..2 {
-        probe(&future, "future", &backup);
-    }
-    assert_eq!(files(&future), before);
 
     let restored = temporary.path().join("restored");
     db::restore_encrypted_storage(&backup, &restored).unwrap();

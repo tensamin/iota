@@ -28,7 +28,6 @@ fn isolated(test: &str, phases: &[&str]) -> Option<String> {
         initialize(std::path::Path::new(
             &std::env::var("RELAY_TEST_STORAGE").unwrap(),
         ));
-        assert!(count("PRAGMA user_version") >= 59);
         return Some(phase);
     }
     let path =

@@ -5,7 +5,7 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
     use crate::util::{chat_files, chats_util};
     use iota_identity::PrincipalHandle;
     let mut conn = Connection::open_in_memory()?;
-    run_migrations_on_connection(&conn)?;
+    initialize_schema(&conn)?;
     conn.execute_batch(
             "INSERT INTO principals (principal_pk, authority_kind, authority_id, remote_user_id, last_resolved_at)
              VALUES (70, 'omega', 'omega:test', 7, 0), (71, 'omega', 'omega:test', 8, 0);",
@@ -245,7 +245,7 @@ fn queue_conflicts_and_exact_downstream_completion_preserve_relay_states()
     use crate::util::{downstream_relay, relay_queue, relay_replay};
     use iota_identity::{IotaNodeId, PrincipalHandle};
     let mut conn = Connection::open_in_memory()?;
-    run_migrations_on_connection(&conn)?;
+    initialize_schema(&conn)?;
     conn.execute_batch(
             "INSERT INTO principals (principal_pk, authority_kind, authority_id, remote_user_id, last_resolved_at)
              VALUES (70, 'omega', 'omega:test', 7, 0), (71, 'omega', 'omega:test', 8, 0);",
@@ -397,65 +397,10 @@ fn queue_conflicts_and_exact_downstream_completion_preserve_relay_states()
 }
 
 #[test]
-fn secret_import_is_atomic_and_does_not_resurrect_deleted_records() -> Result<(), StorageError> {
-    use crate::util::e2ee_storage;
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("e2ee.sqlite3");
-    let legacy = Connection::open(&path)?;
-    legacy.execute_batch(
-            "CREATE TABLE chat_secrets (
-                user_id TEXT, chat_id TEXT, secret_id TEXT, version INTEGER,
-                encrypted_secret BLOB, kem_ciphertext BLOB, wrapping_scheme TEXT,
-                created_at INTEGER, updated_at INTEGER
-             );
-             INSERT INTO chat_secrets VALUES ('7', '7:8', 'chat:7:8:main', 5, x'01', x'02', 'scheme', 10, 20);",
-        )?;
-    let connection = Connection::open_in_memory()?;
-    run_migrations_on_connection(&connection)?;
-    // Interrupt the destination commit after copying its secret rows.
-    connection.execute_batch(
-        "CREATE TRIGGER interrupt_import BEFORE INSERT ON storage_imports
-             BEGIN SELECT RAISE(ABORT, 'injected import interruption'); END;",
-    )?;
-    assert!(e2ee_storage::import_legacy_database(&connection, &path).is_err());
-    assert_eq!(
-        connection.query_row("SELECT count(*) FROM chat_secrets", [], |row| row
-            .get::<_, i64>(0))?,
-        0
-    );
-    assert_eq!(
-        connection.query_row("SELECT count(*) FROM storage_imports", [], |row| row
-            .get::<_, i64>(0))?,
-        0
-    );
-    connection.execute_batch("DROP TRIGGER interrupt_import;")?;
-    e2ee_storage::import_legacy_database(&connection, &path)?;
-    let query = e2ee_storage::ChatSecretQuery {
-        user_id: "7".into(),
-        chat_id: "7:8".into(),
-        secret_id: Some("chat:7:8:main".into()),
-        version: Some(5),
-    };
-    let imported =
-        e2ee_storage::get_chat_secret_on(&connection, &query)?.expect("missing imported secret");
-    assert_eq!(imported.encrypted_secret, vec![1]);
-    assert_eq!((imported.created_at, imported.updated_at), (10, 20));
-    connection.execute("DELETE FROM chat_secrets", [])?;
-    e2ee_storage::import_legacy_database(&connection, &path)?;
-    assert!(e2ee_storage::get_chat_secret_on(&connection, &query)?.is_none());
-    assert_eq!(
-        legacy.query_row("SELECT count(*) FROM chat_secrets", [], |row| row
-            .get::<_, i64>(0))?,
-        1
-    );
-    Ok(())
-}
-
-#[test]
 fn secret_and_relay_completion_share_one_rollback_boundary() -> Result<(), StorageError> {
     use crate::util::{e2ee_storage, relay_replay};
     let mut connection = Connection::open_in_memory()?;
-    run_migrations_on_connection(&connection)?;
+    initialize_schema(&connection)?;
     connection.execute("INSERT INTO principals (principal_pk, authority_kind, authority_id, remote_user_id, last_resolved_at) VALUES (70, 'omega', 'omega:test', 7, 0)", [])?;
     let secret = e2ee_storage::StoredChatSecret {
         user_id: "7".into(),

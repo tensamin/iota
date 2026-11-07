@@ -46,18 +46,15 @@ impl RemoteOmegaResolver {
         locator: &AuthorityLocator,
         allow_network: bool,
     ) -> Result<DiscoveredAuthority, IdentityError> {
-        if let Some(authority) = self
-            .authorities
-            .read()
-            .ok()
-            .and_then(|authorities| authorities.get(locator).cloned())
-        {
-            return Ok(authority);
-        }
         if !allow_network {
-            return Err(IdentityError::Unavailable(
-                "Omega authority discovery is not cached".into(),
-            ));
+            return self
+                .authorities
+                .read()
+                .ok()
+                .and_then(|authorities| authorities.get(locator).cloned())
+                .ok_or_else(|| {
+                    IdentityError::Unavailable("Omega authority discovery is not cached".into())
+                });
         }
         let authority = self.client.discover(locator).await?;
         if authority.service != AuthorityKind::Omega {

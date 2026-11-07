@@ -2,16 +2,12 @@ use super::*;
 
 fn fixture() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
+    db::initialize_schema(&conn).unwrap();
     conn.execute_batch(
-        "CREATE TABLE users(user_id INTEGER PRIMARY KEY);
-        CREATE TABLE user_residency(user_id INTEGER PRIMARY KEY, lifecycle_state TEXT);
-        CREATE TABLE hosted_auth_state(local_user_id INTEGER PRIMARY KEY, enabled INTEGER);
-        INSERT INTO users VALUES (7), (8);
-        INSERT INTO user_residency VALUES (7, 'managed'), (8, 'released');
-        INSERT INTO hosted_auth_state VALUES (7, 1), (8, 0);",
+        "INSERT INTO users(user_id,username,public_key,created_at) VALUES (7,'alice','key-a',0), (8,'bob','key-b',0);
+        INSERT INTO user_residency(user_id,username,lifecycle_state,data_state,updated_at) VALUES (7,'alice','managed','present',0), (8,'bob','released','present',0);",
     )
     .unwrap();
-    migrate(&conn).unwrap();
     conn
 }
 
@@ -199,7 +195,7 @@ fn expiry_scrubs_ciphertext_and_survives_schema_reinitialization() {
     stage_test(&conn, &value).unwrap();
     change(&conn, &value, Uuid::new_v4(), true, 1000).unwrap();
     assert_eq!(expire_in(&conn, 5000).unwrap(), 1);
-    migrate(&conn).unwrap();
+    db::initialize_schema(&conn).unwrap();
     let delivery = read(&conn, &value.key, 3, 7).unwrap().unwrap();
     assert_eq!(delivery.state, State::Expired);
     assert!(delivery.envelope.is_none());
@@ -216,7 +212,7 @@ fn disabled_or_released_accounts_cannot_stage_or_activate() {
     let value = envelope();
     stage_test(&conn, &value).unwrap();
     conn.execute(
-        "UPDATE hosted_auth_state SET enabled = 0 WHERE local_user_id = 7",
+        "UPDATE hosted_auth_state SET enabled = 0, generation = generation + 1 WHERE local_user_id = 7",
         [],
     )
     .unwrap();
@@ -227,7 +223,7 @@ fn disabled_or_released_accounts_cannot_stage_or_activate() {
     ));
     assert!(!hosted(&conn, 8).unwrap());
     conn.execute(
-        "UPDATE hosted_auth_state SET enabled = 1 WHERE local_user_id = 7",
+        "UPDATE hosted_auth_state SET enabled = 1, generation = generation + 1 WHERE local_user_id = 7",
         [],
     )
     .unwrap();

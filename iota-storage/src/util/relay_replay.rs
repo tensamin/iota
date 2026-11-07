@@ -65,57 +65,6 @@ pub enum AcquireResult {
     Collision,
 }
 
-pub(crate) fn migrate(connection: &rusqlite::Connection) -> Result<(), StorageError> {
-    let tx = connection.unchecked_transaction()?;
-    // Some migration tests start with a partial historical schema.
-    let exists: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'relay_inbox')",
-        [],
-        |row| row.get(0),
-    )?;
-    if exists {
-        tx.execute_batch(
-            "CREATE TABLE relay_inbox_v52 (
-                signer_principal INTEGER NOT NULL REFERENCES principals(principal_pk),
-                signer_id INTEGER NOT NULL,
-                message_id TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                destination_id INTEGER NOT NULL,
-                frame BLOB NOT NULL,
-                type_map_version TEXT NOT NULL,
-                frame_id INTEGER NOT NULL,
-                state TEXT NOT NULL CHECK (state IN ('received', 'processing', 'applied', 'queued', 'delivered', 'rejected')),
-                accepted_at INTEGER,
-                applied_at INTEGER,
-                queued_at INTEGER,
-                downstream_acked_at INTEGER,
-                rejected_at INTEGER,
-                processing_generation INTEGER NOT NULL DEFAULT 0 CHECK (processing_generation >= 0),
-                processing_owner TEXT,
-                processing_deadline INTEGER,
-                CHECK ((state = 'processing' AND processing_owner IS NOT NULL AND processing_deadline IS NOT NULL)
-                    OR (state <> 'processing' AND processing_owner IS NULL AND processing_deadline IS NULL)),
-                PRIMARY KEY (signer_principal, message_id)
-            );
-            INSERT INTO relay_inbox_v52 (
-                signer_principal, signer_id, message_id, created_at, destination_id,
-                frame, type_map_version, frame_id, state, accepted_at, applied_at,
-                queued_at, downstream_acked_at, rejected_at
-            ) SELECT signer_principal, signer_id, message_id, created_at, destination_id,
-                frame, type_map_version, frame_id, state, accepted_at, applied_at,
-                queued_at, downstream_acked_at, rejected_at FROM relay_inbox;
-            DROP TABLE relay_inbox;
-            ALTER TABLE relay_inbox_v52 RENAME TO relay_inbox;
-            CREATE INDEX idx_relay_inbox_state ON relay_inbox (state, created_at);
-            CREATE INDEX idx_relay_inbox_processing ON relay_inbox (processing_deadline)
-                WHERE state = 'processing';",
-        )?;
-    }
-    tx.pragma_update(None, "user_version", 52)?;
-    tx.commit()?;
-    Ok(())
-}
-
 pub fn acquire(
     request: RelayReservationRequest<'_>,
     deadline: i64,
@@ -446,21 +395,11 @@ mod tests {
     use rusqlite::{Connection, params};
 
     fn initialize(connection: &Connection) -> Result<(), StorageError> {
+        db::initialize_schema(connection)?;
         connection.execute_batch(
-            "CREATE TABLE principals (principal_pk INTEGER PRIMARY KEY);
-             INSERT INTO principals VALUES (70), (71);
-             CREATE TABLE relay_inbox (
-                signer_principal INTEGER NOT NULL, signer_id INTEGER NOT NULL,
-                message_id TEXT NOT NULL, created_at INTEGER NOT NULL,
-                destination_id INTEGER NOT NULL, frame BLOB NOT NULL,
-                type_map_version TEXT NOT NULL, frame_id INTEGER NOT NULL,
-                state TEXT NOT NULL CHECK (state IN ('received', 'applied', 'queued', 'delivered', 'rejected')),
-                accepted_at INTEGER, applied_at INTEGER, queued_at INTEGER,
-                downstream_acked_at INTEGER, rejected_at INTEGER,
-                PRIMARY KEY (signer_principal, message_id)
-             );",
+            "INSERT INTO principals(principal_pk,authority_kind,authority_id,remote_user_id,last_resolved_at) VALUES (70,'omega','omega:test',7,0), (71,'omega','omega:test',8,0);",
         )?;
-        migrate(connection)
+        Ok(())
     }
 
     fn request(frame: &[u8]) -> RelayReservationRequest<'_> {

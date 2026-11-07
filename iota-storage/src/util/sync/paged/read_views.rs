@@ -9,6 +9,7 @@ use std::{
 
 struct View {
     connection: Arc<Mutex<Connection>>,
+    owner: i64,
     expires: Instant,
 }
 
@@ -86,7 +87,7 @@ pub(super) fn capture(
         entries.remove(&id);
     }
     // This limits simultaneous pinned readers, never account size.
-    if entries.len() >= 64 {
+    if entries.len() >= 64 || entries.values().filter(|view| view.owner == owner).count() >= 4 {
         return Err(protocol_error(SyncError::Capacity));
     }
     let path = tx.path().ok_or_else(unavailable)?;
@@ -111,6 +112,7 @@ pub(super) fn capture(
         id.into(),
         View {
             connection: Arc::new(Mutex::new(connection)),
+            owner,
             expires: Instant::now() + Duration::from_millis(TTL_MS as u64),
         },
     );
@@ -124,12 +126,11 @@ pub(super) fn read<T>(
 ) -> Result<T, StorageError> {
     let connection = {
         let views = views()?;
-        let mut entries = views.entries.lock().map_err(|_| unavailable())?;
+        let entries = views.entries.lock().map_err(|_| unavailable())?;
         let view = entries
-            .get_mut(id)
+            .get(id)
             .filter(|view| view.expires > Instant::now())
             .ok_or_else(|| protocol_error(SyncError::SnapshotRequired))?;
-        view.expires = Instant::now() + Duration::from_millis(TTL_MS as u64);
         view.connection.clone()
     };
     let connection = connection.lock().map_err(|_| unavailable())?;

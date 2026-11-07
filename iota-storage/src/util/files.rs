@@ -376,7 +376,7 @@ pub fn manifest(owner: i64, key: &FileKey) -> Result<Value, StorageError> {
         let own = owner_principal_on(conn, owner)?;
         let (id, manifest, asset, state) = version_on(conn, owner, key)?;
         if own != key.origin {
-            sharing::require_recipient_on(conn, owner, key)?;
+            sharing::require_grant_on(conn, owner, key, true)?;
         }
         let metadata_revision: i64 = conn.query_row(
             "SELECT metadata_revision FROM file_versions WHERE id=?1",
@@ -384,7 +384,7 @@ pub fn manifest(owner: i64, key: &FileKey) -> Result<Value, StorageError> {
             |r| r.get(0),
         )?;
         let progress: Option<(i64,i64,Option<String>,i64)> = conn.query_row("SELECT COALESCE(u.received,0),j.attempts,j.last_error,j.next_attempt_at FROM file_replication_jobs j LEFT JOIN user_asset_uploads u ON u.user_id=?1 AND u.upload_id=j.upload_id WHERE j.version_id=?2",params![owner,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-        let proof: Option<String> = conn.query_row("SELECT proof FROM file_share_grants WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND state IN ('offered','accepted') AND expires_at>?5 ORDER BY revision DESC LIMIT 1",params![owner,handle_on(conn,&key.origin)?,key.file_id,key.version,sync::now_millis()],|r|r.get(0)).optional()?.flatten();
+        let proof: Option<String> = conn.query_row("SELECT proof FROM file_share_grants WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND state IN ('offered','accepted','rejected') AND expires_at>?5 ORDER BY revision DESC LIMIT 1",params![owner,handle_on(conn,&key.origin)?,key.file_id,key.version,sync::now_millis()],|r|r.get(0)).optional()?.flatten();
         let reserved: i64 = conn.query_row("SELECT COALESCE(SUM(size),0) FROM user_asset_uploads WHERE user_id=?1 AND state='uploading'",[owner],|r|r.get(0))?;
         Ok(
             json!({"manifest":manifest,"proof":proof.map(|proof|decode::<Value>(&proof)).transpose()?,"metadata_revision":metadata_revision,"asset_id":asset,"state":state,"transfer":progress.map(|(offset,attempts,error,next_attempt_at)|json!({"offset":offset,"attempts":attempts,"error":error,"next_attempt_at":next_attempt_at})),"reserved_bytes":reserved}),

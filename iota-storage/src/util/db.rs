@@ -3,8 +3,6 @@ use backup::db_file_path;
 pub use backup::verify_and_backup_database;
 pub use backup::{backup_encrypted_storage, restore_encrypted_storage};
 pub use backup::{backup_password_recovery, restore_password_recovery, validate_password_recovery};
-mod migrations;
-use migrations::run_migrations;
 use once_cell::sync::OnceCell;
 use r2d2::ManageConnection;
 use rusqlite::{Connection, Transaction};
@@ -51,27 +49,31 @@ fn create_pool_with_timeout(
     database_path: PathBuf,
     connection_timeout: Duration,
 ) -> Result<Arc<r2d2::Pool<SqliteManager>>, StorageError> {
-    migrations::verify_supported_schema(&Connection::open(&database_path)?)?;
-    let legacy_path = database_path.with_file_name("e2ee.sqlite3");
     let manager = SqliteManager { database_path };
     let pool = r2d2::Pool::builder()
         .max_size(8)
         .connection_timeout(connection_timeout)
         .build(manager)
         .map_err(|error| StorageError::Pool(error.to_string()))?;
-    run_migrations(&pool)?;
     let connection = pool
         .get()
         .map_err(|error| StorageError::Pool(error.to_string()))?;
-    crate::util::e2ee_storage::import_legacy_database(&connection, &legacy_path)?;
+    initialize_schema(&connection)?;
     drop(connection);
     Ok(Arc::new(pool))
 }
 
-/// Opens the SQLite pool and applies all schema migrations.
+pub(crate) fn initialize_schema(connection: &Connection) -> Result<(), StorageError> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(include_str!("db/schema.sql"))?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Opens the SQLite pool and initializes the current schema.
 ///
 /// Daemon startup calls this after database verification and before storage is
-/// reported healthy, so connection and migration failures become a storage
+/// reported healthy, so connection and schema initialization failures become a storage
 /// component failure instead of a lazy-initialization panic.
 pub fn initialize_database() -> Result<(), StorageError> {
     let storage_dir = iota_util::file_util::storage_directory();

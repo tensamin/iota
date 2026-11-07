@@ -51,63 +51,6 @@ pub fn principal_secret_id(chat_id: &str) -> String {
     format!("chat:{chat_id}:main")
 }
 
-/// Import before publishing the database pool. The legacy database is read-only
-/// and remains available for recovery. The marker commits with the imported rows.
-pub(crate) fn import_legacy_database(
-    connection: &Connection,
-    path: &std::path::Path,
-) -> Result<(), TransactionError> {
-    let tx = Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
-    if tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM storage_imports WHERE name = 'e2ee')",
-        [],
-        |row| row.get::<_, bool>(0),
-    )? {
-        return Ok(());
-    }
-    if path.try_exists()? {
-        let legacy = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let exists: bool = legacy.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chat_secrets')",
-            [], |row| row.get(0),
-        )?;
-        if exists {
-            let mut statement = legacy.prepare(
-                "SELECT user_id, chat_id, secret_id, version, encrypted_secret,
-                    kem_ciphertext, wrapping_scheme, created_at, updated_at
-                 FROM chat_secrets ORDER BY user_id, chat_id, secret_id, version",
-            )?;
-            for record in statement.query_map([], chat_secret_from_row)? {
-                let record = record?;
-                let existing = get_chat_secret_on(
-                    &tx,
-                    &ChatSecretQuery {
-                        user_id: record.user_id.clone(),
-                        chat_id: record.chat_id.clone(),
-                        secret_id: Some(record.secret_id.clone()),
-                        version: Some(record.version),
-                    },
-                )?;
-                if let Some(existing) = existing {
-                    if existing != record {
-                        return Err(TransactionError::ChatSecretConflict);
-                    }
-                } else {
-                    // Historical stores may contain only the latest version.
-                    // Import their exact records without inventing earlier secrets.
-                    insert_chat_secret(&tx, &record)?;
-                }
-            }
-        }
-    }
-    tx.execute(
-        "INSERT INTO storage_imports (name, completed_at) VALUES ('e2ee', ?1)",
-        [crate::util::sync::now_millis()],
-    )?;
-    tx.commit()?;
-    Ok(())
-}
-
 pub fn put_chat_secret(record: StoredChatSecret) -> Result<(), StorageError> {
     put_chat_secrets(&[record])
 }

@@ -382,7 +382,7 @@ pub struct RelayService {
     router: Arc<dyn PeerRouter>,
     identities: Option<Arc<dyn IdentityResolver>>,
     node_identity: Option<Arc<dyn RelayNodeIdentity>>,
-    persistence_migrated: std::sync::atomic::AtomicBool,
+    persistence_validated: std::sync::atomic::AtomicBool,
 }
 
 impl RelayService {
@@ -444,7 +444,7 @@ impl RelayService {
             router,
             identities: None,
             node_identity: None,
-            persistence_migrated: std::sync::atomic::AtomicBool::new(false),
+            persistence_validated: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1095,12 +1095,12 @@ impl RelayService {
         limit: i64,
     ) -> Result<Vec<relay_work::AcceptedWork>, RelayServiceError> {
         if !self
-            .persistence_migrated
+            .persistence_validated
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            db::with_db(crate::persisted_relay::migrate_on)
+            db::with_db(crate::persisted_relay::validate_on)
                 .map_err(|e| RelayServiceError::Internal(e.to_string()))?;
-            self.persistence_migrated
+            self.persistence_validated
                 .store(true, std::sync::atomic::Ordering::Release);
         }
         relay_work::incomplete(limit)
