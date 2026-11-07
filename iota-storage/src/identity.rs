@@ -237,7 +237,8 @@ impl SqlitePrincipalStore {
             ));
         }
         let signed_fields_match = current.as_ref().is_some_and(|current| {
-            current.0 == authority_kind.as_str()
+            current.4 > 0
+                && current.0 == authority_kind.as_str()
                 && current.1.as_deref() == Some(user.username.as_str())
                 && current.2.as_ref() == user.display_name.as_ref()
                 && current.3.as_ref() == encoded_home.as_ref()
@@ -246,7 +247,7 @@ impl SqlitePrincipalStore {
         let current_valid_until = current.as_ref().and_then(|current| current.5);
         let renew_validity = current_valid_until
             .is_none_or(|valid_until| valid_until <= resolved_at + LOCAL_DESCRIPTOR_RENEWAL_MILLIS);
-        let revision = current.as_ref().map_or(0, |current| {
+        let revision = current.as_ref().map_or(1, |current| {
             if signed_fields_match && !renew_validity {
                 current.4
             } else {
@@ -410,6 +411,43 @@ pub struct SqliteLocalDescriptorPublisher {
     identity: iota_identity::LocalNodeIdentity,
 }
 
+fn local_file_signing_key(
+    identity: &iota_identity::LocalNodeIdentity,
+    principal: &PrincipalId,
+    key_id: &str,
+) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+    if &principal.authority != identity.authority_id() {
+        return Err(IdentityError::NotFound);
+    }
+    if !iota_identity::valid_file_signing_key_id(key_id) {
+        return Err(IdentityError::InvalidIdentifier(
+            "invalid file signing key ID".into(),
+        ));
+    }
+    let user_id = i64::try_from(principal.user_id).map_err(|_| IdentityError::NotFound)?;
+    let key = db::with_db(|conn| {
+        let encoded: Option<String> = conn.query_row(
+            "SELECT k.public_key FROM principal_keys k JOIN principals p ON p.principal_pk=k.principal_pk
+             WHERE p.authority_id=?1 AND p.remote_user_id=?2 AND p.authority_kind='iota' AND k.key_id=?3",
+            params![principal.authority.as_str(),user_id,key_id], |row| row.get(0),
+        ).optional()?;
+        Ok(encoded)
+    }).map_err(storage_error)?.ok_or(IdentityError::NotFound)?;
+    let key = public_key_bundle_from_base64(&key)
+        .ok_or_else(|| IdentityError::InvalidDescriptor("invalid archived public key".into()))?;
+    if iota_identity::file_signing_key_id(&key)? != key_id {
+        return Err(IdentityError::InvalidDescriptor(
+            "archived signing key fingerprint mismatch".into(),
+        ));
+    }
+    iota_identity::FileSigningKeyProofV1::sign(
+        principal.clone(),
+        AuthorityKind::Iota,
+        &key,
+        &identity.keyring(),
+    )
+}
+
 impl SqliteLocalDescriptorPublisher {
     pub fn new(identity: iota_identity::LocalNodeIdentity) -> Self {
         Self { identity }
@@ -417,6 +455,18 @@ impl SqliteLocalDescriptorPublisher {
 }
 
 impl LocalDescriptorPublisher for SqliteLocalDescriptorPublisher {
+    fn file_signing_key(
+        &self,
+        user: LocalUserId,
+        key_id: &str,
+    ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+        let principal = PrincipalId {
+            authority: self.identity.authority_id().clone(),
+            user_id: u64::try_from(user.0).map_err(|_| IdentityError::NotFound)?,
+        };
+        local_file_signing_key(&self.identity, &principal, key_id)
+    }
+
     fn principal_descriptor(
         &self,
         user: LocalUserId,
@@ -479,6 +529,17 @@ impl LocalIdentityResolver {
 
 #[async_trait::async_trait]
 impl iota_identity::IdentityResolver for LocalIdentityResolver {
+    async fn file_signing_key(
+        &self,
+        principal: &PrincipalId,
+        key_id: &str,
+    ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+        if principal.authority != self.authority || self.authority_kind != AuthorityKind::Iota {
+            return Err(IdentityError::NotFound);
+        }
+        local_file_signing_key(&self.identity, principal, key_id)
+    }
+
     async fn resolve_current_principal(
         &self,
         principal: &PrincipalId,
@@ -802,17 +863,19 @@ impl PrincipalStore for SqlitePrincipalStore {
                 }
                 transaction.execute(
                     r#"INSERT INTO principal_keys (
-                           principal_pk, public_key, valid_from, valid_until, source_revision
-                       ) VALUES (?1, ?2, ?3, ?4, ?5)
+                           principal_pk, public_key, valid_from, valid_until, source_revision, key_id
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                        ON CONFLICT(principal_pk, public_key) DO UPDATE SET
                            valid_until = excluded.valid_until,
-                           source_revision = excluded.source_revision"#,
+                           source_revision = excluded.source_revision,
+                           key_id = excluded.key_id"#,
                     params![
                         handle,
                         encoded,
                         resolved_at,
                         descriptor.valid_until,
                         descriptor.revision,
+                        iota_identity::file_signing_key_id(key).map_err(|_| crate::storage_error::StorageError::Other("invalid file signing key".into()))?,
                     ],
                 )?;
             }

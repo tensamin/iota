@@ -1,8 +1,10 @@
 mod addresses;
 mod discovery;
+mod file_signing_key;
 mod identifiers;
 mod local_node;
 mod principal_descriptor;
+pub use file_signing_key::{FileSigningKeyProofV1, file_signing_key_id, valid_file_signing_key_id};
 pub use principal_descriptor::verify_dual_signature;
 use principal_descriptor::{push_bytes, push_optional_i64, verify_authority_signature};
 mod node_descriptor;
@@ -266,6 +268,14 @@ pub struct VerifiedPrincipalSnapshot {
 }
 
 pub trait LocalDescriptorPublisher: Send + Sync {
+    fn file_signing_key(
+        &self,
+        _: LocalUserId,
+        _: &str,
+    ) -> Result<FileSigningKeyProofV1, IdentityError> {
+        Err(IdentityError::NotFound)
+    }
+
     fn principal_descriptor(
         &self,
         user: LocalUserId,
@@ -499,6 +509,15 @@ impl std::error::Error for IdentityError {}
 
 #[async_trait]
 pub trait IdentityResolver: Send + Sync {
+    /// File-signature evidence only. Never use this key to authorize a relay.
+    async fn file_signing_key(
+        &self,
+        _: &PrincipalId,
+        _: &str,
+    ) -> Result<FileSigningKeyProofV1, IdentityError> {
+        Err(IdentityError::NotFound)
+    }
+
     /// Refresh authoritative ownership, home, and keys. A cached descriptor is
     /// never sufficient for recovery disclosure or an initialization negative.
     async fn resolve_current_principal(

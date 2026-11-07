@@ -40,7 +40,7 @@ fn local_descriptor_revision_persists_changes_and_retirement() {
         )
         .unwrap();
     let first = store.local_principal_descriptor(user.id).unwrap();
-    assert_eq!(first.revision, 0);
+    assert_eq!(first.revision, 1);
 
     store
         .ensure_local_principal(
@@ -53,7 +53,7 @@ fn local_descriptor_revision_persists_changes_and_retirement() {
         .unwrap();
     assert_eq!(
         store.local_principal_descriptor(user.id).unwrap().revision,
-        0
+        1
     );
 
     user.display_name = Some("Alice".into());
@@ -68,7 +68,7 @@ fn local_descriptor_revision_persists_changes_and_retirement() {
         .unwrap();
     assert_eq!(
         store.local_principal_descriptor(user.id).unwrap().revision,
-        1
+        2
     );
 
     let replacement_key = Keyring::generate().public_key_bundle();
@@ -83,7 +83,7 @@ fn local_descriptor_revision_persists_changes_and_retirement() {
         )
         .unwrap();
     let rotated = store.local_principal_descriptor(user.id).unwrap();
-    assert_eq!(rotated.revision, 2);
+    assert_eq!(rotated.revision, 3);
     assert_eq!(rotated.public_keys.len(), 1);
     assert_eq!(
         rotated.public_keys[0].try_to_base64().unwrap(),
@@ -101,7 +101,7 @@ fn local_descriptor_revision_persists_changes_and_retirement() {
         )
         .unwrap();
     let renewed = store.local_principal_descriptor(user.id).unwrap();
-    assert_eq!(renewed.revision, 3);
+    assert_eq!(renewed.revision, 4);
     let mut conflicting = renewed.clone();
     conflicting.display_name = Some("Changed without revision".into());
     assert!(
@@ -121,7 +121,7 @@ fn local_descriptor_revision_persists_changes_and_retirement() {
         user_id: 9,
     };
     let retired = store.get_by_canonical_id(&principal).unwrap().unwrap();
-    assert_eq!(retired.descriptor_revision, 4);
+    assert_eq!(retired.descriptor_revision, 5);
     assert!(
         store
             .upsert_remote_descriptor(

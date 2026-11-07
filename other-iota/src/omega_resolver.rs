@@ -1,6 +1,24 @@
 use super::*;
 
 impl RemoteOmegaResolver {
+    fn known_locator(
+        &self,
+        authority: &AuthorityId,
+    ) -> Result<Option<AuthorityLocator>, IdentityError> {
+        let stored = match &self.authority_directory {
+            Some(directory) => directory.locators_for(authority)?.into_iter().next(),
+            None => None,
+        };
+        Ok(stored.or_else(|| {
+            self.authorities.read().ok().and_then(|authorities| {
+                authorities
+                    .iter()
+                    .find(|(_, found)| &found.authority_id == authority)
+                    .map(|(locator, _)| locator.clone())
+            })
+        }))
+    }
+
     pub fn new(
         client: Arc<dyn FederationIdentityClient>,
         principals: Arc<dyn PrincipalStore>,
@@ -163,6 +181,25 @@ impl RemoteOmegaResolver {
 
 #[async_trait]
 impl IdentityResolver for RemoteOmegaResolver {
+    async fn file_signing_key(
+        &self,
+        principal: &PrincipalId,
+        key_id: &str,
+    ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+        if !principal.authority.as_str().starts_with("omega-key:") {
+            return Err(IdentityError::NotFound);
+        }
+        let locator = self
+            .known_locator(&principal.authority)?
+            .ok_or(IdentityError::NotFound)?;
+        let proof = self
+            .client
+            .file_signing_key(&locator, principal.user_id, key_id)
+            .await?;
+        proof.verify_file_key(principal, key_id)?;
+        Ok(proof)
+    }
+
     async fn resolve_current_principal(
         &self,
         principal: &PrincipalId,
@@ -170,21 +207,7 @@ impl IdentityResolver for RemoteOmegaResolver {
         if !principal.authority.as_str().starts_with("omega-key:") {
             return Err(IdentityError::NotFound);
         }
-        let stored = match &self.authority_directory {
-            Some(directory) => directory
-                .locators_for(&principal.authority)?
-                .into_iter()
-                .next(),
-            None => None,
-        };
-        let locator = stored.or_else(|| {
-            self.authorities.read().ok().and_then(|authorities| {
-                authorities
-                    .iter()
-                    .find(|(_, authority)| authority.authority_id == principal.authority)
-                    .map(|(locator, _)| locator.clone())
-            })
-        });
+        let locator = self.known_locator(&principal.authority)?;
         let Some(locator) = locator else {
             return Err(IdentityError::NotFound);
         };

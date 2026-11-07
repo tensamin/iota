@@ -361,6 +361,40 @@ pub async fn start(
             if !publish_discovery {
                 return Ok(web_config);
             }
+            let publisher = descriptor_publisher.clone();
+            web_config.route_pattern_method(
+                Method::GET,
+                "/federation/v1/users/id/{user_id}/file-signing-keys/{key_id}",
+                move |_, response, params| {
+                    let publisher = publisher.clone();
+                    async move {
+                        let result = params
+                            .get("user_id")
+                            .and_then(|user| user.parse::<i64>().ok())
+                            .map(LocalUserId)
+                            .ok_or_else(|| {
+                                iota_identity::IdentityError::InvalidIdentifier(
+                                    "invalid user ID".into(),
+                                )
+                            })
+                            .and_then(|user| {
+                                publisher.file_signing_key(
+                                    user,
+                                    params.get("key_id").map(String::as_str).unwrap_or(""),
+                                )
+                            });
+                        match result {
+                            Ok(proof) => json_response(&proof, response),
+                            Err(error) => descriptor_error(error, response),
+                        }
+                    }
+                },
+            )
+        })
+        .and_then(|web_config| {
+            if !publish_discovery {
+                return Ok(web_config);
+            }
             let local_users = local_users.clone();
             let publisher = descriptor_publisher.clone();
             web_config.route_pattern_method(

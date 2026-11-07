@@ -32,6 +32,25 @@ pub(super) fn identity_resolve_error(
     }
 }
 
+fn resolved_response(
+    cv: &CommunicationValue,
+    principal: &iota_identity::PrincipalId,
+) -> Result<CommunicationValue, serde_json::Error> {
+    let canonical = serde_json::to_string(principal)?;
+    Ok(CommunicationValue::new(CommunicationType::UserResolved)
+        .with_request_id(cv)
+        .add_typed_default(DataType::Principal, DataValue::Str(canonical.clone()))
+        .add_typed_default(DataType::UserAddress, DataValue::Str(canonical))
+        .add_typed_default(
+            DataType::UserId,
+            DataValue::UnsignedNumber(principal.user_id.into()),
+        )
+        .add_typed_default(
+            DataType::AuthorityId,
+            DataValue::Str(principal.authority.as_str().into()),
+        ))
+}
+
 /// Resolve a `usernameOrId@otherIotaDomainOrIp` address through the federation
 /// identity chain. Network resolution fetches the remote authority's discovery
 /// document, node descriptor and principal descriptor, and pins them into the
@@ -41,9 +60,23 @@ pub async fn handle_user_resolve(
     cv: &CommunicationValue,
     identities: &dyn iota_identity::IdentityResolver,
 ) -> CommunicationValue {
-    let proof_requested = match cv.get_data(DataType::Json) {
-        None => false,
-        Some(DataValue::Str(json)) if json == "{\"principal_proof\":1}" => true,
+    let (proof_requested, file_key_id) = match cv.get_data(DataType::Json) {
+        None => (false, None),
+        Some(DataValue::Str(json)) if json == "{\"principal_proof\":1}" => (true, None),
+        Some(DataValue::Str(json)) => {
+            let key_id = json
+                .strip_prefix("{\"file_signing_key\":\"")
+                .and_then(|value| value.strip_suffix("\"}"));
+            let Some(key_id) = key_id.filter(|key| iota_identity::valid_file_signing_key_id(key))
+            else {
+                return resolve_error(
+                    cv,
+                    CommunicationType::ErrorInvalidData,
+                    "invalid_proof_request",
+                );
+            };
+            (false, Some(key_id))
+        }
         _ => {
             return resolve_error(
                 cv,
@@ -55,6 +88,42 @@ pub async fn handle_user_resolve(
     let Some(raw) = cv.get_data(DataType::UserAddress).as_string() else {
         return resolve_error(cv, CommunicationType::ErrorInvalidData, "missing_address");
     };
+    if let Some(key_id) = file_key_id {
+        let principal = match serde_json::from_str::<iota_identity::PrincipalId>(&raw) {
+            Ok(principal) => principal,
+            Err(_) => {
+                return resolve_error(cv, CommunicationType::ErrorInvalidData, "invalid_address");
+            }
+        };
+        let proof = match identities.file_signing_key(&principal, key_id).await {
+            Ok(proof) => proof,
+            Err(iota_identity::IdentityError::NotFound) => {
+                return resolve_error(
+                    cv,
+                    CommunicationType::ErrorNotFound,
+                    "unknown_file_signing_key",
+                );
+            }
+            Err(error) => return identity_resolve_error(cv, &error),
+        };
+        if let Err(error) = proof.verify_file_key(&principal, key_id) {
+            return identity_resolve_error(cv, &error);
+        }
+        let json = match serde_json::to_string(&proof) {
+            Ok(json) if json.len() <= 256 * 1024 => json,
+            _ => {
+                return resolve_error(
+                    cv,
+                    CommunicationType::ErrorInternal,
+                    "file_key_proof_encoding",
+                );
+            }
+        };
+        return match resolved_response(cv, &principal) {
+            Ok(response) => response.add_typed_default(DataType::Json, DataValue::Str(json)),
+            Err(error) => internal_handler_error(cv, "file_key.principal", error),
+        };
+    }
     let context = iota_identity::ResolutionContext {
         allow_network: true,
         offline_policy: Default::default(),
@@ -140,10 +209,6 @@ pub async fn handle_user_resolve(
         Ok(key) => key,
         Err(error) => return identity_resolve_error(cv, &error),
     };
-    let canonical = match serde_json::to_string(&resolved.principal) {
-        Ok(canonical) => canonical,
-        Err(error) => return internal_handler_error(cv, "user_resolve.principal", error),
-    };
     let keys = resolved
         .public_keys
         .iter()
@@ -152,21 +217,13 @@ pub async fn handle_user_resolve(
     let Ok(keys) = keys else {
         return resolve_error(cv, CommunicationType::ErrorInternal, "key_encoding");
     };
-    let mut response = CommunicationValue::new(CommunicationType::UserResolved)
-        .with_request_id(cv)
-        .add_typed_default(DataType::PublicKey, DataValue::Str(public_key))
-        .add_typed_default(DataType::Principal, DataValue::Str(canonical.clone()))
-        .add_typed_default(DataType::UserAddress, DataValue::Str(canonical))
-        .add_typed_default(
-            DataType::UserId,
-            DataValue::UnsignedNumber(resolved.principal.user_id.into()),
-        )
-        .add_typed_default(
-            DataType::AuthorityId,
-            DataValue::Str(resolved.principal.authority.as_str().into()),
-        )
-        .add_typed_default(DataType::NodeId, DataValue::Str(node.as_str().into()))
-        .add_typed_default(DataType::SigningKeys, DataValue::Array(keys));
+    let mut response = match resolved_response(cv, &resolved.principal) {
+        Ok(response) => response,
+        Err(error) => return internal_handler_error(cv, "user_resolve.principal", error),
+    }
+    .add_typed_default(DataType::PublicKey, DataValue::Str(public_key))
+    .add_typed_default(DataType::NodeId, DataValue::Str(node.as_str().into()))
+    .add_typed_default(DataType::SigningKeys, DataValue::Array(keys));
     if proof_requested {
         let Some(proof) = &resolved.proof else {
             return resolve_error(

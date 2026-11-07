@@ -49,6 +49,24 @@ pub async fn publish_omega_node_descriptor(
 
 #[async_trait]
 impl FederationIdentityClient for HttpFederationIdentityClient {
+    async fn file_signing_key(
+        &self,
+        locator: &AuthorityLocator,
+        user: u64,
+        key_id: &str,
+    ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+        if !iota_identity::valid_file_signing_key_id(key_id) {
+            return Err(IdentityError::InvalidIdentifier(
+                "invalid file signing key ID".into(),
+            ));
+        }
+        self.get_json(
+            locator,
+            &format!("/federation/v1/users/id/{user}/file-signing-keys/{key_id}"),
+        )
+        .await
+    }
+
     async fn discover(
         &self,
         locator: &AuthorityLocator,
