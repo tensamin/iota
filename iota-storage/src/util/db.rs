@@ -13,6 +13,8 @@ use std::time::Duration;
 use crate::storage_error::StorageError;
 
 const DB_NAME: &str = "messages";
+// "ITO1" identifies this directly created layout, not an upgrade sequence.
+const STORAGE_FORMAT: i64 = 0x49544F31;
 
 /// A simple r2d2 manager for rusqlite connections.
 pub struct SqliteManager {
@@ -49,6 +51,7 @@ fn create_pool_with_timeout(
     database_path: PathBuf,
     connection_timeout: Duration,
 ) -> Result<Arc<r2d2::Pool<SqliteManager>>, StorageError> {
+    verify_storage_format(&Connection::open(&database_path)?)?;
     let manager = SqliteManager { database_path };
     let pool = r2d2::Pool::builder()
         .max_size(8)
@@ -64,9 +67,26 @@ fn create_pool_with_timeout(
 }
 
 pub(crate) fn initialize_schema(connection: &Connection) -> Result<(), StorageError> {
+    verify_storage_format(connection)?;
     let transaction = connection.unchecked_transaction()?;
     transaction.execute_batch(include_str!("db/schema.sql"))?;
+    transaction.pragma_update(None, "application_id", STORAGE_FORMAT)?;
     transaction.commit()?;
+    Ok(())
+}
+
+fn verify_storage_format(connection: &Connection) -> Result<(), StorageError> {
+    let format: i64 = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    let populated: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%')",
+        [],
+        |row| row.get(0),
+    )?;
+    if format != STORAGE_FORMAT && (format != 0 || populated) {
+        return Err(StorageError::Other(
+            "incompatible storage format; initialize a fresh database instead of upgrading this store".into(),
+        ));
+    }
     Ok(())
 }
 

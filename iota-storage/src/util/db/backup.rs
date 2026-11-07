@@ -27,6 +27,7 @@ pub fn verify_and_backup_database() -> Result<(), StorageError> {
     }
 
     let connection = Connection::open(&path)?;
+    super::verify_storage_format(&connection)?;
     connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")?;
     connection.execute_batch("PRAGMA wal_checkpoint(FULL);")?;
     let integrity: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
