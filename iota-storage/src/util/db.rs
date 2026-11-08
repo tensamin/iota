@@ -13,7 +13,7 @@ use std::time::Duration;
 use crate::storage_error::StorageError;
 
 const DB_NAME: &str = "messages";
-// "ITO1" identifies this directly created layout, not an upgrade sequence.
+// "ITO1" identifies the initial storage layout, not an upgrade sequence.
 const STORAGE_FORMAT: i64 = 0x49544F31;
 
 /// A simple r2d2 manager for rusqlite connections.
@@ -69,7 +69,7 @@ fn create_pool_with_timeout(
 pub(crate) fn initialize_schema(connection: &Connection) -> Result<(), StorageError> {
     verify_storage_format(connection)?;
     let transaction = connection.unchecked_transaction()?;
-    transaction.execute_batch(include_str!("db/schema.sql"))?;
+    transaction.execute_batch(include_str!("../../migrations/0001_initial.sql"))?;
     transaction.pragma_update(None, "application_id", STORAGE_FORMAT)?;
     transaction.commit()?;
     Ok(())
