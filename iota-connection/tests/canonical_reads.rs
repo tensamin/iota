@@ -12,6 +12,36 @@ use mtp::{
 };
 
 struct Resolver;
+struct ProofResolver(ResolvedPrincipal);
+#[async_trait]
+impl IdentityResolver for ProofResolver {
+    async fn resolve_current_principal(
+        &self,
+        id: &PrincipalId,
+    ) -> Result<ResolvedPrincipal, IdentityError> {
+        if *id != self.0.principal {
+            return Err(IdentityError::NotFound);
+        }
+        Ok(self.0.clone())
+    }
+    async fn resolve_address(
+        &self,
+        _: &UserAddress,
+        _: &ResolutionContext,
+    ) -> Result<ResolvedPrincipal, IdentityError> {
+        Err(IdentityError::NotFound)
+    }
+    async fn resolve_principal(&self, _: &PrincipalId) -> Result<ResolvedPrincipal, IdentityError> {
+        panic!("proof requests must not use cached principal resolution")
+    }
+    async fn signing_keys(
+        &self,
+        _: &PrincipalId,
+        _: &ResolutionContext,
+    ) -> Result<Vec<PublicKeyBundle>, IdentityError> {
+        Ok(self.0.public_keys.clone())
+    }
+}
 #[async_trait]
 impl IdentityResolver for Resolver {
     async fn resolve_address(
@@ -231,6 +261,80 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
             Some(alias as u128)
         );
     }
+    for amount in [-1, 0, 129, i64::MAX] {
+        let response = handle_messages_get(
+            &request(C::MessagesGet)
+                .add_typed_default(D::UserId, DataValue::SignedNumber(handles[1].0.into()))
+                .add_typed_default(D::Offset, DataValue::SignedNumber(0))
+                .add_typed_default(D::Amount, DataValue::SignedNumber(amount.into())),
+        );
+        assert!(response.is_type(C::ErrorInvalidData), "{response:?}");
+    }
+    let oversized_offset = handle_messages_get(
+        &request(C::MessagesGet)
+            .add_typed_default(D::UserId, DataValue::SignedNumber(handles[1].0.into()))
+            .add_typed_default(D::Offset, DataValue::SignedNumber(i64::MAX.into()))
+            .add_typed_default(D::Amount, DataValue::SignedNumber(128)),
+    );
+    assert!(oversized_offset.is_type(C::MessagesGet));
+    assert!(
+        oversized_offset
+            .get_data(D::Messages)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let all = iota_storage::util::chat_files::get_all_messages(1).unwrap();
+    let selected = all[0].id;
+    let unrelated = all[1].id;
+    // A keyed read must not decode unrelated rows, even for the same owner.
+    db::with_db(|conn| {
+        conn.execute(
+            "UPDATE messages SET content = x'ff' WHERE id = ?1",
+            [unrelated],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let keyed =
+        iota_storage::util::chat_files::get_messages_by_ids(1, &[selected, selected, i64::MAX])
+            .unwrap();
+    assert_eq!(keyed.len(), 1);
+    assert_eq!(keyed[0].id, selected);
+    assert_eq!(keyed[0].reactions.len(), all[0].reactions.len());
+    assert!(
+        iota_storage::util::chat_files::get_messages_by_ids(2, &[selected])
+            .unwrap()
+            .is_empty()
+    );
+    db::with_db(|conn| {
+        conn.execute(
+            "UPDATE messages SET content = ?1 WHERE id = ?2",
+            rusqlite::params![all[1].content, unrelated],
+        )?;
+        conn.execute(
+            "UPDATE messages SET history_deleted = 1 WHERE id = ?1",
+            [selected],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        iota_storage::util::chat_files::get_messages_by_ids(1, &[selected])
+            .unwrap()
+            .is_empty()
+    );
+    db::with_db(|conn| {
+        conn.execute(
+            "UPDATE messages SET history_deleted = 0 WHERE id = ?1",
+            [selected],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
     // Self-authored rows use the canonical owner even if the peer alias is also 1.
     db::with_db(|conn| {
         conn.execute(
@@ -405,6 +509,67 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
         string(&resolved, D::PublicKey),
         node.public_keys().try_to_base64().unwrap()
     );
+    assert!(resolved.get_data(D::Json).is_none());
+    let proof_request = resolve
+        .clone()
+        .add_typed_default(D::Json, DataValue::Str("{\"principal_proof\":1}".into()));
+    let mut fresh = SqlitePrincipalStore
+        .get_by_canonical_id(&ids[0])
+        .unwrap()
+        .unwrap();
+    let signed = SignedPrincipalDescriptor::sign(
+        PrincipalDescriptor {
+            principal: fresh.principal.clone(),
+            authority_kind: AuthorityKind::Iota,
+            username: fresh.username.clone(),
+            display_name: None,
+            public_keys: fresh.public_keys.clone(),
+            home: fresh.home.clone(),
+            revision: fresh.descriptor_revision,
+            valid_until: fresh.valid_until,
+            issued_at: now,
+        },
+        &node.keyring(),
+    )
+    .unwrap();
+    fresh.proof = Some(PrincipalProofV1 {
+        descriptor: signed.to_wire_v1().unwrap(),
+        authority_public_key: node.public_keys().try_to_base64().unwrap(),
+    });
+    let proved = handle_user_resolve(&proof_request, &ProofResolver(fresh.clone())).await;
+    assert!(proved.is_type(C::UserResolved), "{proved:?}");
+    let proof: PrincipalProofV1 = serde_json::from_str(&string(&proved, D::Json)).unwrap();
+    proof
+        .descriptor
+        .parse()
+        .unwrap()
+        .verify(
+            &ids[0].authority,
+            &node.public_keys(),
+            Some(fresh.descriptor_revision),
+            now,
+        )
+        .unwrap();
+    fresh.proof = None;
+    assert!(
+        handle_user_resolve(&proof_request, &ProofResolver(fresh))
+            .await
+            .is_type(C::ErrorNoIota)
+    );
+    for json in [
+        "{}",
+        "{\"principal_proof\":2}",
+        "{\"principal_proof\":1,\"principal_proof\":1}",
+    ] {
+        let invalid = resolve
+            .clone()
+            .add_typed_default(D::Json, DataValue::Str(json.into()));
+        assert!(
+            handle_user_resolve(&invalid, &Resolver)
+                .await
+                .is_type(C::ErrorInvalidData)
+        );
+    }
     let bare =
         request(C::UserResolve).add_typed_default(D::UserAddress, DataValue::Str("7".into()));
     assert!(

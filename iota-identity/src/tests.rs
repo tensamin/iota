@@ -397,6 +397,7 @@ fn legacy_omega_route_is_not_a_cryptographic_iota_identity() {
 #[test]
 fn descriptor_expiry_is_exclusive() {
     let resolved = ResolvedPrincipal {
+        proof: None,
         principal: PrincipalId {
             authority: AuthorityId::new("omega:example").unwrap(),
             user_id: 1,

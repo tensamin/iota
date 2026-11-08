@@ -1,9 +1,6 @@
 use crate::storage_error::StorageError;
 use crate::util::db;
-use iota_util::file_util::get_directory;
 use rusqlite::{OptionalExtension, params};
-use std::fs;
-use std::path::Path;
 
 pub const GLOBAL_SESSION_ID: i64 = 0;
 const GLOBAL_SETTINGS_NAME: &str = "__global__";
@@ -47,81 +44,6 @@ pub fn save_global(user_id: i64, payload: &str) -> Result<(), StorageError> {
 
 pub fn load_global(user_id: i64) -> Result<Option<String>, StorageError> {
     load(user_id, GLOBAL_SESSION_ID, GLOBAL_SETTINGS_NAME)
-}
-
-pub fn migrate_legacy_files() -> Result<(), StorageError> {
-    let users_dir = Path::new(&get_directory()).join("users");
-    let Ok(users) = fs::read_dir(users_dir) else {
-        return Ok(());
-    };
-
-    for user_entry in users {
-        let user_entry = user_entry?;
-        let Ok(user_id) = user_entry.file_name().to_string_lossy().parse::<i64>() else {
-            continue;
-        };
-        let user_dir = user_entry.path();
-
-        migrate_file_if_missing(
-            user_id,
-            GLOBAL_SESSION_ID,
-            GLOBAL_SETTINGS_NAME,
-            &user_dir.join("global.settings"),
-        )?;
-
-        let settings_dir = user_dir.join("settings");
-        let Ok(settings_entries) = fs::read_dir(settings_dir) else {
-            continue;
-        };
-        for settings_entry in settings_entries {
-            let settings_entry = settings_entry?;
-            let path = settings_entry.path();
-            if path.is_file() {
-                if let Some(name) = setting_name(&path) {
-                    migrate_file_if_missing(user_id, GLOBAL_SESSION_ID, &name, &path)?;
-                }
-                continue;
-            }
-
-            let Ok(session_id) = settings_entry.file_name().to_string_lossy().parse::<i64>() else {
-                continue;
-            };
-            let Ok(device_settings) = fs::read_dir(path) else {
-                continue;
-            };
-            for setting_entry in device_settings {
-                let setting_entry = setting_entry?;
-                let path = setting_entry.path();
-                if let Some(name) = setting_name(&path) {
-                    migrate_file_if_missing(user_id, session_id, &name, &path)?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn setting_name(path: &Path) -> Option<String> {
-    (path.extension()?.to_str()? == "settings").then(|| {
-        path.file_stem()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_string()
-    })
-}
-
-fn migrate_file_if_missing(
-    user_id: i64,
-    session_id: i64,
-    name: &str,
-    path: &Path,
-) -> Result<(), StorageError> {
-    if !path.is_file() || load(user_id, session_id, name)?.is_some() {
-        return Ok(());
-    }
-    let payload = fs::read_to_string(path)?;
-    save(user_id, session_id, name, &payload)
 }
 
 #[cfg(test)]

@@ -509,10 +509,8 @@ pub(crate) fn validate_persisted_operation_identity(
     Ok(())
 }
 
-/// Run after storage initialization and receipt backfill, before recovery starts.
-/// Each fenced update commits independently. The wrapper itself is the progress
-/// marker, so interruption never requires replaying a global migration step.
-pub(crate) fn migrate_on(connection: &Connection) -> Result<(), StorageError> {
+/// Quarantine invalid persisted operations before recovery without rewriting valid records.
+pub(crate) fn validate_on(connection: &Connection) -> Result<(), StorageError> {
     iota_storage::util::relay_work::block_invalid_metadata_on(connection)?;
     let mut cursor: Option<(i64, String)> = None;
     loop {
@@ -572,26 +570,16 @@ pub(crate) fn migrate_on(connection: &Connection) -> Result<(), StorageError> {
                     let matches: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM principals WHERE principal_pk = ?1 AND authority_id = ?2 AND remote_user_id = ?3)", params![handle.0, identity.authority, identity.user_id as i64], |r| r.get(0))?;
                     if !matches { return Err(invalid("persisted relay principal mapping")); }
                 }
-                backfill_escrow_on(connection,&p,&bytes,generation,&state)?;
-                encode_prepared_operation(&p)
+                 Ok(())
             });
             match converted {
-                Ok(versioned) => {
-                    // Already-versioned valid records need no write.
-                    if serde_json::from_slice::<serde_json::Value>(&bytes)
-                        .ok()
-                        .is_some_and(|v| v.get("schema_version").is_some())
-                    {
-                        continue;
-                    }
-                    connection.execute("UPDATE relay_inbox SET prepared_operation = ?6 WHERE signer_principal = ?1 AND message_id = ?2 AND prepared_operation = ?3 AND processing_generation = ?4 AND state = ?5", params![signer, message_id, bytes, generation, state, versioned])?;
-                }
+                Ok(()) => {}
                 Err(error @ StorageError::InvalidRelayPayload(_)) => {
                     iota_logger::log!(
-                        "Persisted relay migration blocked for {message_id}: {error}"
+                        "Persisted relay validation blocked for {message_id}: {error}"
                     );
                     let tx = connection.unchecked_transaction()?;
-                    let changed = tx.execute("UPDATE relay_inbox SET recovery_status = 'blocked', recovery_error_code = 'persisted_migration_invalid' WHERE signer_principal = ?1 AND message_id = ?2 AND prepared_operation = ?3 AND processing_generation = ?4 AND state = ?5", params![signer, message_id, bytes, generation, state])?;
+                    let changed = tx.execute("UPDATE relay_inbox SET recovery_status = 'blocked', recovery_error_code = 'invalid_persisted_operation' WHERE signer_principal = ?1 AND message_id = ?2 AND prepared_operation = ?3 AND processing_generation = ?4 AND state = ?5", params![signer, message_id, bytes, generation, state])?;
                     if changed > 0 && matches!(state.as_str(), "applied" | "queued" | "delivered") {
                         iota_storage::util::relay_acceptance_receipts::block_backfill_for_record_on(&tx, signer, &message_id)?;
                     }
@@ -601,53 +589,6 @@ pub(crate) fn migrate_on(connection: &Connection) -> Result<(), StorageError> {
             }
         }
     }
-}
-
-/// Only retained verified operations carrying both originals and their exact
-/// original signed frame are eligible. Legacy DTOs without that proof stay
-/// unavailable. Never derive the other recipient copy from chat_secrets.
-fn backfill_escrow_on(
-    connection: &Connection,
-    operation: &PreparedRelayOperation,
-    observed: &[u8],
-    generation: i64,
-    state: &str,
-) -> Result<(), StorageError> {
-    use iota_storage::util::{chat_secret_recovery as recovery, relay_work};
-    let Some(escrow) = &operation.secret_escrow else {
-        return Ok(());
-    };
-    if !matches!(state, "applied" | "queued" | "delivered") {
-        return Ok(());
-    }
-    let tx = connection.unchecked_transaction()?;
-    let matches:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM relay_inbox WHERE signer_principal=?1 AND message_id=?2 AND prepared_operation=?3 AND processing_generation=?4 AND state=?5 AND recovery_status!='blocked')",params![operation.signer.0,operation.message_id,observed,generation,state],|row| row.get(0))?;
-    if !matches {
-        return Ok(());
-    }
-    for effect in &operation.effects {
-        if let Err(error) = relay_work::verify_owner_in_tx(&tx, effect.owner.0, effect.principal) {
-            if matches!(error, StorageError::RelayOwnerUnavailable) {
-                return Ok(());
-            }
-            return Err(error);
-        }
-        if effect.sent_by_self
-            && matches!(operation.delivery, DeliveryTarget::Remote(_))
-            && state != "delivered"
-        {
-            let finalized:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM relay_deferred_secrets WHERE signer_principal=?1 AND message_id=?2 AND storage_owner=?3 AND owner_principal=?4 AND completed_at IS NOT NULL)",params![operation.signer.0,operation.message_id,effect.owner.0,effect.principal.0],|row| row.get(0))?;
-            if !finalized {
-                return Ok(());
-            }
-        }
-    }
-    match recovery::commit_escrow_in_tx(&tx, escrow) {
-        Err(StorageError::RelayOwnerUnavailable) => return Ok(()),
-        result => result?,
-    }
-    tx.commit()?;
-    Ok(())
 }
 
 /// Legacy prepared DTOs retain the signed Tau frame, dictionary and both
@@ -1037,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_resumes_preserving_invalid_bytes_and_state() {
+    fn validation_preserves_valid_bytes_and_quarantines_invalid_records() {
         let c = database();
         insert(&c, "old", &legacy("old"));
         let versioned =
@@ -1048,33 +989,30 @@ mod tests {
         insert(&c, "bad", bad);
         insert(&c, "wrong-identity", &legacy("another-message"));
         c.execute("UPDATE relay_inbox SET state='processing', processing_generation=8 WHERE message_id='bad'", []).unwrap();
-        migrate_on(&c).unwrap();
+        validate_on(&c).unwrap();
         assert_eq!(record(&c, "done").0, versioned);
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&record(&c, "old").0).unwrap()["schema_version"],
-            "1"
-        );
+        assert_eq!(record(&c, "old").0, legacy("old"));
         assert_eq!(
             record(&c, "bad"),
             (
                 bad.to_vec(),
                 "blocked".into(),
-                Some("persisted_migration_invalid".into()),
+                Some("invalid_persisted_operation".into()),
                 "processing".into(),
                 8
             )
         );
         assert_eq!(record(&c, "wrong-identity").1, "blocked");
         let old_after = record(&c, "old");
-        // Simulate another legacy record remaining after an interrupted pass.
+        // Validation can resume without changing records it has already checked.
         insert(&c, "remaining", &legacy("remaining"));
-        migrate_on(&c).unwrap();
+        validate_on(&c).unwrap();
         assert_eq!(record(&c, "old"), old_after);
-        assert!(record(&c, "remaining").0 != legacy("remaining"));
+        assert_eq!(record(&c, "remaining").0, legacy("remaining"));
     }
 
     #[test]
-    fn migration_checks_database_principal_mapping() {
+    fn validation_checks_database_principal_mapping() {
         let c = database();
         let bytes = legacy("message");
         insert(&c, "message", &bytes);
@@ -1083,52 +1021,8 @@ mod tests {
             [],
         )
         .unwrap();
-        migrate_on(&c).unwrap();
+        validate_on(&c).unwrap();
         assert_eq!(record(&c, "message").0, bytes);
         assert_eq!(record(&c, "message").1, "blocked");
-    }
-
-    #[test]
-    fn interrupted_migration_keeps_committed_progress() {
-        let c = database();
-        insert(&c, "a", &legacy("a"));
-        insert(&c, "b", &legacy("b"));
-        c.execute_batch(
-            "CREATE TRIGGER interrupt BEFORE UPDATE OF prepared_operation ON relay_inbox
-            WHEN OLD.message_id='b' BEGIN SELECT RAISE(ABORT, 'interrupted'); END;",
-        )
-        .unwrap();
-        assert!(migrate_on(&c).is_err());
-        let first = record(&c, "a").0;
-        assert_ne!(first, legacy("a"));
-        assert_eq!(record(&c, "b").0, legacy("b"));
-        c.execute_batch("DROP TRIGGER interrupt;").unwrap();
-        migrate_on(&c).unwrap();
-        assert_eq!(record(&c, "a").0, first);
-        assert_ne!(record(&c, "b").0, legacy("b"));
-    }
-
-    #[test]
-    fn migration_fences_each_observed_record() {
-        let c = database();
-        for id in ["a", "bytes", "generation", "state"] {
-            insert(&c, id, &legacy(id));
-        }
-        // The migration has already read this batch when its first update fires.
-        c.execute_batch(
-            "CREATE TRIGGER concurrent_work AFTER UPDATE OF prepared_operation ON relay_inbox
-            WHEN OLD.message_id='a' BEGIN
-                UPDATE relay_inbox SET prepared_operation=X'FF' WHERE message_id='bytes';
-                UPDATE relay_inbox SET processing_generation=1 WHERE message_id='generation';
-                UPDATE relay_inbox SET state='applied' WHERE message_id='state';
-            END;",
-        )
-        .unwrap();
-        migrate_on(&c).unwrap();
-        assert_eq!(record(&c, "bytes").0, vec![255]);
-        assert_eq!(record(&c, "generation").0, legacy("generation"));
-        assert_eq!(record(&c, "state").0, legacy("state"));
-        assert_eq!(record(&c, "generation").4, 1);
-        assert_eq!(record(&c, "state").3, "applied");
     }
 }

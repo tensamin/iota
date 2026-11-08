@@ -79,24 +79,6 @@ pub enum Error {
     Storage(#[from] StorageError),
 }
 
-pub(crate) fn migrate(conn: &Connection) -> Result<(), StorageError> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS call_epoch_envelopes (
-        owner TEXT NOT NULL, call_id TEXT NOT NULL, recipient TEXT NOT NULL,
-        user_id INTEGER NOT NULL, epoch INTEGER NOT NULL, local_user_id INTEGER NOT NULL,
-        owner_omikron_id INTEGER NOT NULL, state TEXT NOT NULL,
-        expires_at INTEGER NOT NULL, fingerprint BLOB, payload TEXT,
-        PRIMARY KEY(owner, call_id, recipient, user_id, epoch)
-    );
-    CREATE INDEX IF NOT EXISTS call_epoch_expiry ON call_epoch_envelopes(expires_at);
-    CREATE TABLE IF NOT EXISTS call_epoch_operations (
-        owner TEXT NOT NULL, operation_id TEXT NOT NULL, fingerprint BLOB NOT NULL,
-        PRIMARY KEY(owner, operation_id)
-    );",
-    )?;
-    Ok(())
-}
-
 fn canonical_authority(value: &str, prefix: &str) -> bool {
     value.strip_prefix(prefix).is_some_and(|key| {
         key.len() == 64

@@ -85,6 +85,7 @@ async fn verify_fixture(json: &[u8], expected_producer: &str) {
         f.canonical
     );
     let resolved = |id: &protocol::Principal, handle, keys| ResolvedPrincipal {
+        proof: None,
         principal: PrincipalId {
             authority: AuthorityId::new(&id.authority).unwrap(),
             user_id: id.user_id,
@@ -218,6 +219,7 @@ fn native_rust_peer_metadata_and_content_open_at_both_iotas() {
     let signer_key = PublicKeyBundle::from_base64(&fixture.signer_public_key).unwrap();
     let authority = AuthorityId::for_omega(&nodes[0].public_keys()).unwrap();
     let principal = |user_id, handle, home, keys| ResolvedPrincipal {
+        proof: None,
         principal: PrincipalId {
             authority: authority.clone(),
             user_id,

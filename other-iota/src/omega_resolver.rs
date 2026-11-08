@@ -1,6 +1,45 @@
 use super::*;
 
 impl RemoteOmegaResolver {
+    async fn verified_authority(
+        &self,
+        authority: &AuthorityId,
+    ) -> Result<Option<(AuthorityLocator, DiscoveredAuthority)>, IdentityError> {
+        let mut locators = match &self.authority_directory {
+            Some(directory) => directory.locators_for(authority)?,
+            None => Vec::new(),
+        };
+        if let Ok(authorities) = self.authorities.read() {
+            locators.extend(
+                authorities
+                    .iter()
+                    .filter(|(_, found)| &found.authority_id == authority)
+                    .map(|(locator, _)| locator.clone()),
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut last_error = None;
+        for locator in locators {
+            if !seen.insert(locator.clone()) {
+                continue;
+            }
+            match self.client.discover(&locator).await {
+                Ok(discovered)
+                    if discovered.service == AuthorityKind::Omega
+                        && &discovered.authority_id == authority =>
+                {
+                    return Ok(Some((locator, discovered)));
+                }
+                Ok(_) => last_error = Some(IdentityError::KeyPinMismatch),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        match last_error {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
+    }
+
     pub fn new(
         client: Arc<dyn FederationIdentityClient>,
         principals: Arc<dyn PrincipalStore>,
@@ -11,7 +50,16 @@ impl RemoteOmegaResolver {
             principals,
             nodes,
             authorities: RwLock::new(HashMap::new()),
+            authority_directory: None,
         }
+    }
+
+    pub fn with_authority_directory(
+        mut self,
+        directory: Arc<dyn iota_identity::AuthorityDirectory>,
+    ) -> Self {
+        self.authority_directory = Some(directory);
+        self
     }
 
     pub(super) async fn authority(
@@ -19,18 +67,15 @@ impl RemoteOmegaResolver {
         locator: &AuthorityLocator,
         allow_network: bool,
     ) -> Result<DiscoveredAuthority, IdentityError> {
-        if let Some(authority) = self
-            .authorities
-            .read()
-            .ok()
-            .and_then(|authorities| authorities.get(locator).cloned())
-        {
-            return Ok(authority);
-        }
         if !allow_network {
-            return Err(IdentityError::Unavailable(
-                "Omega authority discovery is not cached".into(),
-            ));
+            return self
+                .authorities
+                .read()
+                .ok()
+                .and_then(|authorities| authorities.get(locator).cloned())
+                .ok_or_else(|| {
+                    IdentityError::Unavailable("Omega authority discovery is not cached".into())
+                });
         }
         let authority = self.client.discover(locator).await?;
         if authority.service != AuthorityKind::Omega {
@@ -49,6 +94,13 @@ impl RemoteOmegaResolver {
         selector: &UserSelector,
     ) -> Result<ResolvedPrincipal, IdentityError> {
         let wire = self.client.principal_descriptor(locator, selector).await?;
+        let proof = iota_identity::PrincipalProofV1 {
+            descriptor: wire.clone(),
+            authority_public_key: authority
+                .public_keys
+                .try_to_base64()
+                .map_err(|error| IdentityError::InvalidDescriptor(error.to_string()))?,
+        };
         let home_node = wire.home_node.clone();
         let signed = wire.parse()?;
         match selector {
@@ -116,10 +168,16 @@ impl RemoteOmegaResolver {
                 now_millis(),
             )?
         };
+        if let Some(directory) = &self.authority_directory {
+            directory.record_verified_omega(locator, &verified)?;
+        }
         let handle = self.principals.upsert_remote_descriptor(&verified)?;
-        self.principals
+        let mut resolved = self
+            .principals
             .get_principal(handle)?
-            .ok_or(IdentityError::NotFound)
+            .ok_or(IdentityError::NotFound)?;
+        resolved.proof = Some(proof);
+        Ok(resolved)
     }
 
     pub(super) fn cached(
@@ -141,25 +199,37 @@ impl RemoteOmegaResolver {
 
 #[async_trait]
 impl IdentityResolver for RemoteOmegaResolver {
+    async fn file_signing_key(
+        &self,
+        principal: &PrincipalId,
+        key_id: &str,
+    ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+        if !principal.authority.as_str().starts_with("omega-key:") {
+            return Err(IdentityError::NotFound);
+        }
+        let (locator, _) = self
+            .verified_authority(&principal.authority)
+            .await?
+            .ok_or(IdentityError::NotFound)?;
+        let proof = self
+            .client
+            .file_signing_key(&locator, principal.user_id, key_id)
+            .await?;
+        proof.verify_file_key(principal, key_id)?;
+        Ok(proof)
+    }
+
     async fn resolve_current_principal(
         &self,
         principal: &PrincipalId,
     ) -> Result<ResolvedPrincipal, IdentityError> {
-        let locator = self.authorities.read().ok().and_then(|authorities| {
-            authorities
-                .iter()
-                .find(|(_, authority)| authority.authority_id == principal.authority)
-                .map(|(locator, _)| locator.clone())
-        });
-        let Some(locator) = locator else {
+        if !principal.authority.as_str().starts_with("omega-key:") {
+            return Err(IdentityError::NotFound);
+        }
+        let Some((locator, authority)) = self.verified_authority(&principal.authority).await?
+        else {
             return Err(IdentityError::NotFound);
         };
-        let authority = self.client.discover(&locator).await?;
-        if authority.service != AuthorityKind::Omega
-            || authority.authority_id != principal.authority
-        {
-            return Err(IdentityError::KeyPinMismatch);
-        }
         let current = self
             .refresh(
                 &locator,
@@ -226,6 +296,9 @@ impl IdentityResolver for RemoteOmegaResolver {
         principal: &PrincipalId,
         context: &ResolutionContext,
     ) -> Result<ResolvedPrincipal, IdentityError> {
+        if !principal.authority.as_str().starts_with("omega-key:") {
+            return Err(IdentityError::NotFound);
+        }
         let cached = self.principals.get_by_canonical_id(principal)?;
         let now = now_millis();
         if let Some(cached) = cached.as_ref()
@@ -238,22 +311,11 @@ impl IdentityResolver for RemoteOmegaResolver {
         {
             return Ok(cached.clone());
         }
-        let locator = self.authorities.read().ok().and_then(|authorities| {
-            authorities
-                .iter()
-                .find(|(_, authority)| authority.authority_id == principal.authority)
-                .map(|(locator, authority)| (locator.clone(), authority.clone()))
-        });
-        if context.allow_network
-            && let Some((locator, authority)) = locator
-        {
-            return self
-                .refresh(
-                    &locator,
-                    &authority,
-                    &UserSelector::UserId(principal.user_id),
-                )
-                .await;
+        if context.allow_network {
+            match self.resolve_current_principal(principal).await {
+                Err(IdentityError::NotFound) => {}
+                result => return result,
+            }
         }
         match cached {
             Some(_) => Err(IdentityError::Unavailable(

@@ -37,6 +37,18 @@ const FRESH_CACHE_MILLIS: i64 = 15 * 60 * 1_000;
 
 #[async_trait]
 pub trait FederationIdentityClient: Send + Sync {
+    async fn file_signing_key(
+        &self,
+        _: &AuthorityLocator,
+        _: u64,
+        _: &str,
+    ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+        Err(IdentityError::Unavailable(
+            "file signing key evidence is unavailable".into(),
+        ))
+    }
+
+    /// Omega discovery must verify its signed locator binding against the request target.
     async fn discover(
         &self,
         locator: &AuthorityLocator,
@@ -90,6 +102,7 @@ pub struct RemoteOmegaResolver {
     principals: Arc<dyn PrincipalStore>,
     nodes: Arc<dyn NodeDirectory>,
     authorities: RwLock<HashMap<AuthorityLocator, DiscoveredAuthority>>,
+    authority_directory: Option<Arc<dyn iota_identity::AuthorityDirectory>>,
 }
 
 fn verify_key_pin(

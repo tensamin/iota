@@ -14,14 +14,15 @@ iota-identity = { path = "../iota-identity" }
 iota-logger = { path = "../iota-logger" }
 iota-storage = { path = "../iota-storage" }
     iota-util = { path = "../iota-util" }
-mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "87c535650a3a33b166139b02cdd7327d412d3bca", features = ["crypto"] }
+mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "eef7562be64e77d8c29ba5af6df7596073e3c9f2", features = ["crypto"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = "0.40.0"
-tau-relay-protocol = { git = "https://github.com/TensaminDev/Tau.git", rev = "ccbdcb81df00d626da16071c4c8b0b1ec803f87c" }
-tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "ccbdcb81df00d626da16071c4c8b0b1ec803f87c" }
+tau-relay-protocol = { git = "https://github.com/TensaminDev/Tau.git", rev = "d6183368f3e2b91b3c3d86eae3802654b349be10" }
+tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "d6183368f3e2b91b3c3d86eae3802654b349be10" }
 tokio = { version = "1.50.0", features = ["rt"] }
 uuid = "1"
 
 [dev-dependencies]
+tempfile = "3"
 tokio = { version = "1.50.0", features = ["macros", "rt"] }

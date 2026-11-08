@@ -133,7 +133,21 @@ pub(crate) async fn resolve_and_verify_native_for_ingress(
     keyring: &Keyring,
 ) -> Result<VerifiedFederatedRelay, IdentityError> {
     use mtp::codec::{ProtectionPolicy, relay::*};
-    let options = RelayOpenOptions::new(ProtectionPolicy::ed25519());
+    let map = frame.type_map().ok_or_else(|| {
+        IdentityError::InvalidDescriptor("missing native relay dictionary".into())
+    })?;
+    // Keep the legacy 1.0 receiver contract; the 1.1 application profile uses
+    // the same dual-signature policy as current browser/native senders.
+    let policy = match map.version.to_string().as_str() {
+        "1.0" => ProtectionPolicy::ed25519(),
+        "1.1" => ProtectionPolicy::dual(),
+        _ => {
+            return Err(IdentityError::InvalidDescriptor(
+                "unsupported native relay dictionary".into(),
+            ));
+        }
+    };
+    let options = RelayOpenOptions::new(policy);
     let route =
         tau_relay_protocol::unverified_native_route(&frame, keyring).map_err(protocol_error)?;
     let signer_id = canonical_principal(&route.signer)?;

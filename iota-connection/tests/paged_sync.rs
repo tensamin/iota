@@ -20,8 +20,7 @@ fn exchange(request: Request) -> Response {
 
 #[test]
 fn pages_pin_state_authorize_scope_and_require_explicit_complete_acknowledgment() {
-    let directory =
-        std::path::Path::new("/tmp/opencode").join(format!("paged-sync-{}", uuid::Uuid::new_v4()));
+    let directory = std::env::temp_dir().join(format!("paged-sync-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
     iota_util::file_util::configure_storage_directory(directory.clone());
     db::initialize_database().unwrap();

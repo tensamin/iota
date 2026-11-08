@@ -19,7 +19,7 @@ impl OmikronConnection {
         let cancellation = self.preparation_cancellation();
         let verification = tokio::select! {
             _ = cancellation.cancelled() => return,
-            result = crate::tauth::verify_authorization(&self.http_client, request_json) => result,
+            result = crate::tauth::verify_authorization(request_json) => result,
         };
         let verified = match verification {
             Ok(verified) => verified,
@@ -126,7 +126,7 @@ impl OmikronConnection {
         let cancellation = self.preparation_cancellation();
         let verification = tokio::select! {
             _ = cancellation.cancelled() => return,
-            result = crate::tauth::verify_authorization(&self.http_client, &request_json) => result,
+            result = crate::tauth::verify_authorization(&request_json) => result,
         };
         let verified = match verification {
             Ok(verified)

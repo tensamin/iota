@@ -78,8 +78,8 @@ impl NodeIdentityResolver for Peer {
 #[tokio::test]
 async fn missing_local_escrow_uses_exact_independently_verified_peer_operation_after_offline_retry()
 {
-    let directory = std::path::Path::new("/tmp/opencode")
-        .join(format!("tensamin-peer-recovery-{}", uuid::Uuid::new_v4()));
+    let directory =
+        std::env::temp_dir().join(format!("tensamin-peer-recovery-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&directory).unwrap();
     initialize(&directory);
     let fixture = Fixture::new(false);

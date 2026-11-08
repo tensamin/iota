@@ -3,8 +3,6 @@ use backup::db_file_path;
 pub use backup::verify_and_backup_database;
 pub use backup::{backup_encrypted_storage, restore_encrypted_storage};
 pub use backup::{backup_password_recovery, restore_password_recovery, validate_password_recovery};
-mod migrations;
-use migrations::run_migrations;
 use once_cell::sync::OnceCell;
 use r2d2::ManageConnection;
 use rusqlite::{Connection, Transaction};
@@ -15,6 +13,8 @@ use std::time::Duration;
 use crate::storage_error::StorageError;
 
 const DB_NAME: &str = "messages";
+// "ITO1" identifies the initial storage layout, not an upgrade sequence.
+const STORAGE_FORMAT: i64 = 0x49544F31;
 
 /// A simple r2d2 manager for rusqlite connections.
 pub struct SqliteManager {
@@ -51,26 +51,49 @@ fn create_pool_with_timeout(
     database_path: PathBuf,
     connection_timeout: Duration,
 ) -> Result<Arc<r2d2::Pool<SqliteManager>>, StorageError> {
-    let legacy_path = database_path.with_file_name("e2ee.sqlite3");
+    verify_storage_format(&Connection::open(&database_path)?)?;
     let manager = SqliteManager { database_path };
     let pool = r2d2::Pool::builder()
         .max_size(8)
         .connection_timeout(connection_timeout)
         .build(manager)
         .map_err(|error| StorageError::Pool(error.to_string()))?;
-    run_migrations(&pool)?;
     let connection = pool
         .get()
         .map_err(|error| StorageError::Pool(error.to_string()))?;
-    crate::util::e2ee_storage::import_legacy_database(&connection, &legacy_path)?;
+    initialize_schema(&connection)?;
     drop(connection);
     Ok(Arc::new(pool))
 }
 
-/// Opens the SQLite pool and applies all schema migrations.
+pub(crate) fn initialize_schema(connection: &Connection) -> Result<(), StorageError> {
+    verify_storage_format(connection)?;
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(include_str!("../../migrations/0001_initial.sql"))?;
+    transaction.pragma_update(None, "application_id", STORAGE_FORMAT)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn verify_storage_format(connection: &Connection) -> Result<(), StorageError> {
+    let format: i64 = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    let populated: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%')",
+        [],
+        |row| row.get(0),
+    )?;
+    if format != STORAGE_FORMAT && (format != 0 || populated) {
+        return Err(StorageError::Other(
+            "incompatible storage format; initialize a fresh database instead of upgrading this store".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Opens the SQLite pool and initializes the current schema.
 ///
 /// Daemon startup calls this after database verification and before storage is
-/// reported healthy, so connection and migration failures become a storage
+/// reported healthy, so connection and schema initialization failures become a storage
 /// component failure instead of a lazy-initialization panic.
 pub fn initialize_database() -> Result<(), StorageError> {
     let storage_dir = iota_util::file_util::storage_directory();
@@ -104,7 +127,9 @@ where
     blocking_region(|| {
         let pool = pool()?;
         let mut conn = pool.get().map_err(|e| StorageError::Pool(e.to_string()))?;
+        crate::util::sync::paged::prepare_transaction_capture(&conn)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM transaction_sync_events", [])?;
         let before: i64 = tx.query_row(
             "SELECT sequence FROM hosted_auth_changes WHERE singleton = 1",
             [],
@@ -115,9 +140,9 @@ where
             [],
             |row| row.get(0),
         )?;
-        let sync_heads = crate::util::sync::paged::transaction_heads(&tx)?;
         let value = f(&tx)?;
-        crate::util::sync::paged::capture_transaction_events(&tx, &sync_heads)?;
+        crate::util::sync::paged::capture_transaction_events(&tx)?;
+        tx.execute("DELETE FROM transaction_sync_events", [])?;
         let secret_changed: bool = tx.query_row(
             "SELECT sequence FROM chat_secret_changes WHERE singleton = 1",
             [],

@@ -25,17 +25,15 @@ pub fn omega_host() -> String {
         .to_string()
 }
 
-/* `GET /api/get/omikron` - random connected Omikron. Used on first-ever run;
- * the only discovery endpoint with a liveness guarantee. */
+/* `GET /api/get/omikron` - random connected Omikron. Used on first-ever run. */
 pub async fn discover_random() -> Result<OmikronEndpoint, String> {
     fetch(&format!("{}/api/get/omikron", api_base())).await
 }
 
-/* `GET /api/get/omikron/{iota_id}` - this Iota's primary Omikron.
- * No liveness guarantee (may 404 after restart or point at a stale Omikron);
- * fall back to `discover_random`. */
+/* `GET /api/get/iota/{iota_id}/omikron` - this Iota's live primary Omikron.
+ * May 404 before this Iota is connected; fall back to `discover_random`. */
 pub async fn discover_primary(iota_id: u64) -> Result<OmikronEndpoint, String> {
-    fetch(&format!("{}/api/get/omikron/{}", api_base(), iota_id)).await
+    fetch(&format!("{}/api/get/iota/{}/omikron", api_base(), iota_id)).await
 }
 
 async fn fetch(url: &str) -> Result<OmikronEndpoint, String> {

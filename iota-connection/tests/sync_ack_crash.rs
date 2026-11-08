@@ -16,8 +16,7 @@ fn sync_acknowledgments_commit_once_across_process_loss() {
         panic!("the selected crash boundary did not terminate the process");
     }
 
-    let root = std::path::Path::new("/tmp/opencode")
-        .join(format!("sync-ack-crash-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("sync-ack-crash-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     iota_util::file_util::configure_storage_directory(root.clone());
     db::initialize_database().unwrap();

@@ -17,6 +17,7 @@ pub struct OmegaIdentityResolver {
     locator: AuthorityLocator,
     principals: Arc<dyn PrincipalStore>,
     local_node: Option<iota_identity::IotaNodeId>,
+    federation: Arc<dyn other_iota::FederationIdentityClient>,
 }
 
 impl OmegaIdentityResolver {
@@ -26,6 +27,7 @@ impl OmegaIdentityResolver {
         locator: AuthorityLocator,
         principals: Arc<dyn PrincipalStore>,
         local_node: Option<iota_identity::IotaNodeId>,
+        federation: Arc<dyn other_iota::FederationIdentityClient>,
     ) -> Self {
         Self {
             client,
@@ -33,6 +35,7 @@ impl OmegaIdentityResolver {
             locator,
             principals,
             local_node,
+            federation,
         }
     }
 
@@ -142,6 +145,12 @@ pub async fn resolve_omega_principal(
         .ok_or_else(|| IdentityError::Unavailable("Omega signed identity is unavailable".into()))?;
     let wire: iota_identity::PrincipalDescriptorWireV1 = serde_json::from_slice(bytes)
         .map_err(|error| IdentityError::InvalidDescriptor(error.to_string()))?;
+    let proof = iota_identity::PrincipalProofV1 {
+        descriptor: wire.clone(),
+        authority_public_key: authority_keys
+            .try_to_base64()
+            .map_err(|error| IdentityError::InvalidDescriptor(error.to_string()))?,
+    };
     let home_node = wire
         .home_node
         .clone()
@@ -178,13 +187,31 @@ pub async fn resolve_omega_principal(
     {
         iota_storage::identity::bind_verified_omega_hosted_principal(&snapshot, node)?;
     }
-    principals
+    let mut resolved = principals
         .get_principal(handle)?
-        .ok_or(IdentityError::NotFound)
+        .ok_or(IdentityError::NotFound)?;
+    resolved.proof = Some(proof);
+    Ok(resolved)
 }
 
 #[async_trait]
 impl IdentityResolver for OmegaIdentityResolver {
+    async fn file_signing_key(
+        &self,
+        principal: &PrincipalId,
+        key_id: &str,
+    ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+        if principal.authority != self.authority {
+            return Err(IdentityError::NotFound);
+        }
+        let proof = self
+            .federation
+            .file_signing_key(&self.locator, principal.user_id, key_id)
+            .await?;
+        proof.verify_file_key(principal, key_id)?;
+        Ok(proof)
+    }
+
     async fn resolve_current_principal(
         &self,
         principal: &PrincipalId,
@@ -372,6 +399,93 @@ mod tests {
 
     struct LookupClient(Option<CommunicationValue>);
 
+    struct FileKeyClient(Option<iota_identity::FileSigningKeyProofV1>);
+
+    #[async_trait]
+    impl other_iota::FederationIdentityClient for FileKeyClient {
+        async fn file_signing_key(
+            &self,
+            locator: &AuthorityLocator,
+            _: u64,
+            _: &str,
+        ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+            assert_eq!(locator.as_str(), "remote.example");
+            self.0.clone().ok_or(IdentityError::NotFound)
+        }
+
+        async fn discover(
+            &self,
+            _: &AuthorityLocator,
+        ) -> Result<iota_identity::DiscoveredAuthority, IdentityError> {
+            Err(IdentityError::NotFound)
+        }
+
+        async fn node_descriptor(
+            &self,
+            _: &AuthorityLocator,
+            _: &str,
+        ) -> Result<other_iota::FetchedNodeDescriptor, IdentityError> {
+            Err(IdentityError::NotFound)
+        }
+
+        async fn principal_descriptor(
+            &self,
+            _: &AuthorityLocator,
+            _: &UserSelector,
+        ) -> Result<iota_identity::PrincipalDescriptorWireV1, IdentityError> {
+            Err(IdentityError::NotFound)
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_omega_file_keys_do_not_require_a_prior_remote_discovery() {
+        let authority = Keyring::generate();
+        let user = Keyring::generate();
+        let principal = PrincipalId {
+            authority: AuthorityId::for_omega(&authority.public_key_bundle()).unwrap(),
+            user_id: 7,
+        };
+        let proof = iota_identity::FileSigningKeyProofV1::sign(
+            principal.clone(),
+            AuthorityKind::Omega,
+            &user.public_key_bundle(),
+            &authority,
+        )
+        .unwrap();
+        let resolver = OmegaIdentityResolver::new(
+            Arc::new(LookupClient(None)),
+            principal.authority.clone(),
+            AuthorityLocator::new("remote.example").unwrap(),
+            Arc::new(iota_storage::identity::SqlitePrincipalStore),
+            None,
+            Arc::new(FileKeyClient(Some(proof.clone()))),
+        );
+        assert_eq!(
+            resolver
+                .file_signing_key(&principal, &proof.key_id)
+                .await
+                .unwrap()
+                .key_id,
+            proof.key_id
+        );
+        assert!(
+            resolver
+                .file_signing_key(&principal, &"0".repeat(64))
+                .await
+                .is_err()
+        );
+        let other = PrincipalId {
+            user_id: 8,
+            ..principal
+        };
+        assert!(
+            resolver
+                .file_signing_key(&other, &proof.key_id)
+                .await
+                .is_err()
+        );
+    }
+
     #[async_trait]
     impl OmikronClient for LookupClient {
         async fn send_message(&self, _: &CommunicationValue) -> Result<(), crate::OmikronError> {
@@ -409,6 +523,7 @@ mod tests {
             user_id: 7,
         };
         let resolved = ResolvedPrincipal {
+            proof: None,
             principal: principal.clone(),
             handle: PrincipalHandle(9),
             username: Some("cached-user".into()),
@@ -424,6 +539,7 @@ mod tests {
             AuthorityLocator::new("remote.example").unwrap(),
             Arc::new(CachedStore { resolved }),
             None,
+            Arc::new(FileKeyClient(None)),
         );
 
         let cached = resolver
@@ -459,6 +575,7 @@ mod tests {
             );
         let store = CachedStore {
             resolved: ResolvedPrincipal {
+                proof: None,
                 principal: PrincipalId {
                     authority: authority.clone(),
                     user_id: 7,

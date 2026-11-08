@@ -25,157 +25,6 @@ pub struct HostedAuthState {
     pub enabled: bool,
 }
 
-/// Triggers cover external database writers as well as application lifecycle calls.
-pub(crate) fn migrate(connection: &Connection) -> Result<(), StorageError> {
-    let tx = connection.unchecked_transaction()?;
-    let exists = |table: &str| {
-        tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [table],
-            |row| row.get::<_, bool>(0),
-        )
-    };
-    tx.execute_batch(
-        "CREATE TABLE hosted_auth_state (
-            local_user_id INTEGER PRIMARY KEY,
-            generation INTEGER NOT NULL CHECK (typeof(generation) = 'integer' AND generation > 0),
-            enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
-        );
-        CREATE TABLE hosted_connection_authorizations (
-            connection_id TEXT PRIMARY KEY,
-            server_instance TEXT NOT NULL,
-            local_user_id INTEGER NOT NULL,
-            principal_handle INTEGER NOT NULL,
-            auth_generation INTEGER NOT NULL,
-            revoked INTEGER NOT NULL DEFAULT 0 CHECK (revoked IN (0, 1))
-        );
-        CREATE INDEX hosted_authorizations_owner
-        ON hosted_connection_authorizations(local_user_id, revoked);
-        CREATE TABLE hosted_auth_changes (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), sequence INTEGER NOT NULL);
-        INSERT INTO hosted_auth_changes VALUES (1, 0);
-        CREATE TRIGGER hosted_auth_monotonic BEFORE UPDATE ON hosted_auth_state
-        BEGIN
-            SELECT CASE WHEN OLD.generation = 9223372036854775807
-                THEN RAISE(ABORT, 'hosted auth generation exhausted') END;
-            SELECT CASE WHEN NEW.generation <= OLD.generation
-                THEN RAISE(ABORT, 'hosted auth generation must increase') END;
-        END;
-        CREATE TRIGGER hosted_auth_tombstone BEFORE DELETE ON hosted_auth_state
-        BEGIN SELECT RAISE(ABORT, 'hosted auth tombstones must survive deletion'); END;
-        CREATE TRIGGER hosted_auth_invalidate AFTER UPDATE ON hosted_auth_state
-        BEGIN UPDATE hosted_connection_authorizations SET revoked = 1
-              WHERE local_user_id = NEW.local_user_id;
-              UPDATE hosted_auth_changes SET sequence = sequence + 1 WHERE singleton = 1; END;
-        ",
-    )?;
-    let has_users = exists("users")?;
-    if has_users {
-        if exists("user_residency")? {
-            tx.execute_batch("INSERT INTO hosted_auth_state SELECT u.user_id, 1, CASE WHEN r.lifecycle_state = 'released' THEN 0 ELSE 1 END FROM users u LEFT JOIN user_residency r ON r.user_id = u.user_id;")?;
-        } else {
-            tx.execute_batch("INSERT INTO hosted_auth_state SELECT user_id, 1, 0 FROM users;")?;
-        }
-        tx.execute_batch(
-            "CREATE TRIGGER hosted_auth_create AFTER INSERT ON users
-             BEGIN
-                 INSERT INTO hosted_auth_state VALUES (NEW.user_id, 1, 1)
-                 ON CONFLICT(local_user_id) DO UPDATE SET generation = generation + 1, enabled = 1;
-             END;",
-        )?;
-    }
-    if exists("user_residency")? {
-        tx.execute_batch(
-            "INSERT OR IGNORE INTO hosted_auth_state SELECT user_id, 1, 0 FROM user_residency;",
-        )?;
-    }
-    // SQLite rejects overflow through the integer CHECK, rolling back the account mutation.
-    for (name, event, condition, user, enabled) in [
-        (
-            "key",
-            "AFTER UPDATE OF public_key ON users",
-            "NEW.public_key != OLD.public_key",
-            "NEW.user_id",
-            "enabled",
-        ),
-        ("delete", "BEFORE DELETE ON users", "1", "OLD.user_id", "0"),
-        (
-            "residency",
-            "AFTER UPDATE OF lifecycle_state ON user_residency",
-            "NEW.lifecycle_state != OLD.lifecycle_state",
-            "NEW.user_id",
-            "CASE WHEN NEW.lifecycle_state = 'managed' THEN 1 ELSE 0 END",
-        ),
-        (
-            "binding",
-            "AFTER UPDATE ON hosted_principals",
-            "NEW.principal_handle != OLD.principal_handle OR NEW.local_user_id != OLD.local_user_id",
-            "OLD.local_user_id",
-            "enabled",
-        ),
-        (
-            "moved_binding",
-            "AFTER UPDATE ON hosted_principals",
-            "NEW.local_user_id != OLD.local_user_id",
-            "NEW.local_user_id",
-            "enabled",
-        ),
-        (
-            "released_residency",
-            "AFTER INSERT ON user_residency",
-            "NEW.lifecycle_state = 'released'",
-            "NEW.user_id",
-            "0",
-        ),
-        (
-            "unbind",
-            "BEFORE DELETE ON hosted_principals",
-            "1",
-            "OLD.local_user_id",
-            "0",
-        ),
-        (
-            "bind",
-            "AFTER INSERT ON hosted_principals",
-            "1",
-            "NEW.local_user_id",
-            "enabled",
-        ),
-    ] {
-        if !exists(event.split_whitespace().last().expect("trigger table"))? {
-            continue;
-        }
-        tx.execute_batch(&format!(
-            "CREATE TRIGGER hosted_auth_{name} {event} WHEN {condition} BEGIN
-                SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM hosted_auth_state WHERE local_user_id = {user})
-                    THEN RAISE(ABORT, 'missing hosted auth state') END;
-                UPDATE hosted_auth_state SET generation = generation + 1, enabled = {enabled}
-                WHERE local_user_id = {user};
-            END;"
-        ))?;
-    }
-    if exists("principals")? && exists("hosted_principals")? {
-        tx.execute_batch(
-        "CREATE TRIGGER hosted_auth_principal_delete BEFORE DELETE ON principals BEGIN
-            UPDATE hosted_auth_state SET generation = generation + 1, enabled = 0
-            WHERE local_user_id IN (SELECT local_user_id FROM hosted_principals WHERE principal_handle = OLD.principal_pk);
-        END;
-        CREATE TRIGGER hosted_auth_authority AFTER UPDATE OF authority_kind, authority_id, remote_user_id, home, retired_at ON principals
-        WHEN NEW.authority_kind IS NOT OLD.authority_kind OR NEW.authority_id IS NOT OLD.authority_id
-          OR NEW.remote_user_id IS NOT OLD.remote_user_id OR NEW.home IS NOT OLD.home
-          OR NEW.retired_at IS NOT OLD.retired_at
-        BEGIN
-            UPDATE hosted_auth_state SET generation = generation + 1,
-                enabled = CASE WHEN NEW.retired_at IS NULL THEN enabled ELSE 0 END
-            WHERE local_user_id IN (SELECT local_user_id FROM hosted_principals WHERE principal_handle = OLD.principal_pk);
-        END;
-        ",
-    )?;
-    }
-    tx.pragma_update(None, "user_version", 51)?;
-    tx.commit()?;
-    Ok(())
-}
-
 pub fn current(user: LocalUserId) -> Result<HostedAuthState, StorageError> {
     db::with_db(|connection| current_in_db(connection, user))
 }
@@ -343,44 +192,6 @@ pub fn verify(lease: &HostedAuthorizationLease) -> Result<(), StorageError> {
     db::with_db(|connection| verify_in_db(connection, lease))
 }
 
-/// Call from the schema migration after version 54. The caller owns user_version.
-pub fn migrate_server_instances(connection: &Connection) -> Result<(), StorageError> {
-    connection.execute_batch(FORWARDED_REVOCATION_SCHEMA)?;
-    let exists: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hosted_server_instances')",
-        [], |row| row.get(0),
-    )?;
-    if exists {
-        return Ok(());
-    }
-    let tx = connection.unchecked_transaction()?;
-    let has_revoked: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('hosted_connection_authorizations') WHERE name = 'revoked')",
-        [], |row| row.get(0),
-    )?;
-    if !has_revoked {
-        tx.execute_batch("ALTER TABLE hosted_connection_authorizations ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0 CHECK (revoked IN (0, 1));")?;
-    }
-    tx.execute_batch(
-        "CREATE TABLE hosted_server_instances (
-            server_instance TEXT PRIMARY KEY,
-            expires_at INTEGER NOT NULL
-        );
-        UPDATE hosted_connection_authorizations SET revoked = 1;
-        DROP TRIGGER IF EXISTS hosted_auth_invalidate;
-        CREATE TRIGGER hosted_auth_invalidate AFTER UPDATE ON hosted_auth_state
-        BEGIN UPDATE hosted_connection_authorizations SET revoked = 1
-              WHERE local_user_id = NEW.local_user_id;
-              UPDATE hosted_auth_changes SET sequence = sequence + 1 WHERE singleton = 1; END;
-        CREATE TRIGGER hosted_server_expiry BEFORE INSERT ON hosted_connection_authorizations
-        WHEN NOT EXISTS (SELECT 1 FROM hosted_server_instances
-            WHERE server_instance = NEW.server_instance AND expires_at > unixepoch())
-        BEGIN SELECT RAISE(ABORT, 'hosted server lease expired'); END;",
-    )?;
-    tx.commit()?;
-    Ok(())
-}
-
 /// A stopped owner cannot renew an expired lease or revive its authorizations.
 pub fn maintain_server(instance: &str, start: bool) -> Result<(), StorageError> {
     db::with_immediate_transaction(|tx| maintain_server_in_tx(tx, instance, start))
@@ -474,15 +285,6 @@ pub fn remove(connection_id: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
-pub(crate) const FORWARDED_REVOCATION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS hosted_forwarded_revocations (
-    connection_id TEXT PRIMARY KEY NOT NULL,
-    revoked_at INTEGER NOT NULL
-);
-CREATE TRIGGER IF NOT EXISTS hosted_forwarded_revocations_immutable BEFORE UPDATE ON hosted_forwarded_revocations
-BEGIN SELECT RAISE(ABORT,'forwarded cancellation is permanent'); END;
-CREATE TRIGGER IF NOT EXISTS hosted_forwarded_revocations_delete BEFORE DELETE ON hosted_forwarded_revocations
-BEGIN SELECT RAISE(ABORT,'forwarded cancellation is permanent'); END;";
-
 /// Cancel a server-generated forwarding nonce even if registration has not yet
 /// happened. The tombstone has no account/principal dependency and survives
 /// restart. A successful return fences every subsequent actual application commit.
@@ -533,24 +335,13 @@ mod tests {
     use super::*;
 
     fn setup(connection: &Connection) {
+        db::initialize_schema(connection).unwrap();
         connection.execute_batch(
-            "CREATE TABLE users (user_id INTEGER PRIMARY KEY, public_key TEXT, display_name TEXT);
-             CREATE TABLE user_residency (user_id INTEGER PRIMARY KEY, lifecycle_state TEXT);
-             CREATE TABLE principals (principal_pk INTEGER PRIMARY KEY, authority_kind TEXT,
-                authority_id TEXT, remote_user_id INTEGER, home TEXT, retired_at INTEGER);
-             CREATE TABLE hosted_principals (local_user_id INTEGER PRIMARY KEY, principal_handle INTEGER);
-             INSERT INTO users VALUES (7, 'key', 'Alice');
-             INSERT INTO user_residency VALUES (7, 'managed');
-             INSERT INTO principals VALUES (9, 'iota', 'local', 7, 'local', NULL);
-             INSERT INTO principals VALUES (10, 'iota', 'other', 8, 'other', NULL);
-             INSERT INTO hosted_principals VALUES (7, 9);
-             CREATE TABLE relay_inbox (signer_principal INTEGER, signer_id INTEGER, message_id TEXT,
-                created_at INTEGER, accepted_at INTEGER, destination_id INTEGER, frame BLOB,
-                frame_id INTEGER, type_map_version TEXT, state TEXT,
-                PRIMARY KEY (signer_principal, message_id));"
+            "INSERT INTO users(user_id,username,public_key,created_at,display_name) VALUES (7, 'alice', 'key', 0, 'Alice');
+             INSERT INTO user_residency(user_id,username,lifecycle_state,data_state,updated_at) VALUES (7, 'alice', 'managed', 'present', 0);
+             INSERT INTO principals(principal_pk,authority_kind,authority_id,remote_user_id,home,last_resolved_at) VALUES (9, 'iota', 'local', 7, 'local', 0), (10, 'iota', 'other', 8, 'other', 0);
+             INSERT INTO hosted_principals VALUES (7, 9);"
         ).unwrap();
-        migrate(connection).unwrap();
-        migrate_server_instances(connection).unwrap();
         connection
             .execute(
                 "INSERT INTO hosted_server_instances VALUES ('instance', unixepoch() + 60)",
@@ -566,7 +357,9 @@ mod tests {
             identity: ValidatedHostedIdentity {
                 local_user: LocalUserId(7),
                 principal: PrincipalHandle(9),
-                auth_generation: 1,
+                auth_generation: current_in_db(connection, LocalUserId(7))
+                    .unwrap()
+                    .generation,
             },
         };
         let tx = connection.transaction().unwrap();
@@ -635,41 +428,6 @@ mod tests {
             verify_in_db(&connection, &forwarded),
             Err(StorageError::HostedAuthorizationDenied)
         ));
-    }
-
-    #[test]
-    fn legacy_authorizations_gain_revoked_state_and_migration_is_idempotent() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE hosted_connection_authorizations (connection_id TEXT PRIMARY KEY, server_instance TEXT, local_user_id INTEGER, principal_handle INTEGER, auth_generation INTEGER);
-            CREATE TABLE hosted_auth_state (local_user_id INTEGER, generation INTEGER);
-            CREATE TABLE hosted_auth_changes (singleton INTEGER, sequence INTEGER);
-            INSERT INTO hosted_auth_state VALUES (7, 1);
-            INSERT INTO hosted_auth_changes VALUES (1, 0);
-            INSERT INTO hosted_connection_authorizations VALUES ('old', 'old-owner', 7, 9, 1);
-            CREATE TRIGGER hosted_auth_invalidate AFTER UPDATE ON hosted_auth_state BEGIN DELETE FROM hosted_connection_authorizations WHERE local_user_id = NEW.local_user_id; END;").unwrap();
-        migrate_server_instances(&connection).unwrap();
-        let revoked = |id: &str| {
-            connection
-                .query_row(
-                    "SELECT revoked FROM hosted_connection_authorizations WHERE connection_id = ?1",
-                    [id],
-                    |row| row.get::<_, bool>(0),
-                )
-                .unwrap()
-        };
-        assert!(revoked("old"));
-        connection
-            .execute_batch(
-                "INSERT INTO hosted_server_instances VALUES ('live', unixepoch() + 60);
-            INSERT INTO hosted_connection_authorizations VALUES ('new', 'live', 7, 9, 1, 0);",
-            )
-            .unwrap();
-        migrate_server_instances(&connection).unwrap();
-        assert!(!revoked("new"));
-        connection
-            .execute("UPDATE hosted_auth_state SET generation = 2", [])
-            .unwrap();
-        assert!(revoked("new"));
     }
 
     #[test]
@@ -771,7 +529,7 @@ mod tests {
             .execute("DELETE FROM users WHERE user_id = 7", [])
             .unwrap();
         connection
-            .execute("INSERT INTO users VALUES (7, 'key', 'Alice')", [])
+            .execute("INSERT INTO users(user_id,username,public_key,created_at,display_name) VALUES (7, 'alice', 'key', 0, 'Alice')", [])
             .unwrap();
         let tx = connection.transaction().unwrap();
         let mut pending = stale.clone();

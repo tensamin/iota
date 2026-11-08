@@ -154,6 +154,22 @@ fn local_descriptor(user: crate::users::user_profile::UserProfile) -> LocalUserD
 pub struct SqlitePrincipalStore;
 
 impl SqlitePrincipalStore {
+    pub fn resolved_display_name(
+        &self,
+        principal: &ResolvedPrincipal,
+    ) -> Result<Option<String>, IdentityError> {
+        let user_id = i64::try_from(principal.principal.user_id).map_err(|_| {
+            IdentityError::InvalidIdentifier("principal user ID exceeds storage range".into())
+        })?;
+        db::with_db(|connection| {
+            Ok(connection.query_row(
+                "SELECT display_name FROM principals WHERE principal_pk = ?1 AND authority_id = ?2 AND remote_user_id = ?3 AND descriptor_revision = ?4 AND retired_at IS NULL",
+                params![principal.handle.0, principal.principal.authority.as_str(), user_id, principal.descriptor_revision],
+                |row| row.get::<_, Option<String>>(0),
+            ).optional()?.flatten())
+        }).map_err(storage_error)
+    }
+
     pub fn principal_for_local_user(
         &self,
         user: LocalUserId,
@@ -221,7 +237,8 @@ impl SqlitePrincipalStore {
             ));
         }
         let signed_fields_match = current.as_ref().is_some_and(|current| {
-            current.0 == authority_kind.as_str()
+            current.4 > 0
+                && current.0 == authority_kind.as_str()
                 && current.1.as_deref() == Some(user.username.as_str())
                 && current.2.as_ref() == user.display_name.as_ref()
                 && current.3.as_ref() == encoded_home.as_ref()
@@ -230,7 +247,7 @@ impl SqlitePrincipalStore {
         let current_valid_until = current.as_ref().and_then(|current| current.5);
         let renew_validity = current_valid_until
             .is_none_or(|valid_until| valid_until <= resolved_at + LOCAL_DESCRIPTOR_RENEWAL_MILLIS);
-        let revision = current.as_ref().map_or(0, |current| {
+        let revision = current.as_ref().map_or(1, |current| {
             if signed_fields_match && !renew_validity {
                 current.4
             } else {
@@ -394,6 +411,43 @@ pub struct SqliteLocalDescriptorPublisher {
     identity: iota_identity::LocalNodeIdentity,
 }
 
+fn local_file_signing_key(
+    identity: &iota_identity::LocalNodeIdentity,
+    principal: &PrincipalId,
+    key_id: &str,
+) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+    if &principal.authority != identity.authority_id() {
+        return Err(IdentityError::NotFound);
+    }
+    if !iota_identity::valid_file_signing_key_id(key_id) {
+        return Err(IdentityError::InvalidIdentifier(
+            "invalid file signing key ID".into(),
+        ));
+    }
+    let user_id = i64::try_from(principal.user_id).map_err(|_| IdentityError::NotFound)?;
+    let key = db::with_db(|conn| {
+        let encoded: Option<String> = conn.query_row(
+            "SELECT k.public_key FROM principal_keys k JOIN principals p ON p.principal_pk=k.principal_pk
+             WHERE p.authority_id=?1 AND p.remote_user_id=?2 AND p.authority_kind='iota' AND k.key_id=?3",
+            params![principal.authority.as_str(),user_id,key_id], |row| row.get(0),
+        ).optional()?;
+        Ok(encoded)
+    }).map_err(storage_error)?.ok_or(IdentityError::NotFound)?;
+    let key = public_key_bundle_from_base64(&key)
+        .ok_or_else(|| IdentityError::InvalidDescriptor("invalid archived public key".into()))?;
+    if iota_identity::file_signing_key_id(&key)? != key_id {
+        return Err(IdentityError::InvalidDescriptor(
+            "archived signing key fingerprint mismatch".into(),
+        ));
+    }
+    iota_identity::FileSigningKeyProofV1::sign(
+        principal.clone(),
+        AuthorityKind::Iota,
+        &key,
+        &identity.keyring(),
+    )
+}
+
 impl SqliteLocalDescriptorPublisher {
     pub fn new(identity: iota_identity::LocalNodeIdentity) -> Self {
         Self { identity }
@@ -401,6 +455,18 @@ impl SqliteLocalDescriptorPublisher {
 }
 
 impl LocalDescriptorPublisher for SqliteLocalDescriptorPublisher {
+    fn file_signing_key(
+        &self,
+        user: LocalUserId,
+        key_id: &str,
+    ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+        let principal = PrincipalId {
+            authority: self.identity.authority_id().clone(),
+            user_id: u64::try_from(user.0).map_err(|_| IdentityError::NotFound)?,
+        };
+        local_file_signing_key(&self.identity, &principal, key_id)
+    }
+
     fn principal_descriptor(
         &self,
         user: LocalUserId,
@@ -423,6 +489,7 @@ impl LocalDescriptorPublisher for SqliteLocalDescriptorPublisher {
 }
 
 pub struct LocalIdentityResolver {
+    identity: iota_identity::LocalNodeIdentity,
     authority: AuthorityId,
     authority_kind: AuthorityKind,
     home: PrincipalHome,
@@ -432,16 +499,15 @@ pub struct LocalIdentityResolver {
 
 impl LocalIdentityResolver {
     pub fn new(
-        authority: AuthorityId,
-        authority_kind: AuthorityKind,
-        home: PrincipalHome,
+        identity: iota_identity::LocalNodeIdentity,
         local_users: Arc<dyn LocalUserStore>,
         principals: Arc<SqlitePrincipalStore>,
     ) -> Self {
         Self {
-            authority,
-            authority_kind,
-            home,
+            authority: identity.authority_id().clone(),
+            authority_kind: AuthorityKind::Iota,
+            home: PrincipalHome::Iota(identity.node_id().clone()),
+            identity,
             local_users,
             principals,
         }
@@ -463,6 +529,17 @@ impl LocalIdentityResolver {
 
 #[async_trait::async_trait]
 impl iota_identity::IdentityResolver for LocalIdentityResolver {
+    async fn file_signing_key(
+        &self,
+        principal: &PrincipalId,
+        key_id: &str,
+    ) -> Result<iota_identity::FileSigningKeyProofV1, IdentityError> {
+        if principal.authority != self.authority || self.authority_kind != AuthorityKind::Iota {
+            return Err(IdentityError::NotFound);
+        }
+        local_file_signing_key(&self.identity, principal, key_id)
+    }
+
     async fn resolve_current_principal(
         &self,
         principal: &PrincipalId,
@@ -478,7 +555,7 @@ impl iota_identity::IdentityResolver for LocalIdentityResolver {
         if !self.local_users.is_hosted_here(user)? {
             return Err(IdentityError::NotFound);
         }
-        let resolved = self.resolve_principal(principal).await?;
+        let mut resolved = self.resolve_principal(principal).await?;
         let handle = self
             .local_users
             .principal_for_local_user(user)?
@@ -499,6 +576,19 @@ impl iota_identity::IdentityResolver for LocalIdentityResolver {
                 "local principal ownership changed".into(),
             ));
         }
+        let signed = SignedPrincipalDescriptor::sign(
+            self.principals.local_principal_descriptor(user)?,
+            &self.identity.keyring(),
+        )?;
+        resolved.proof = Some(iota_identity::PrincipalProofV1 {
+            descriptor: signed.to_wire_v1()?,
+            authority_public_key: self
+                .identity
+                .keyring()
+                .public_key_bundle()
+                .try_to_base64()
+                .map_err(|error| IdentityError::InvalidDescriptor(error.to_string()))?,
+        });
         Ok(resolved)
     }
 
@@ -775,17 +865,19 @@ impl PrincipalStore for SqlitePrincipalStore {
                 }
                 transaction.execute(
                     r#"INSERT INTO principal_keys (
-                           principal_pk, public_key, valid_from, valid_until, source_revision
-                       ) VALUES (?1, ?2, ?3, ?4, ?5)
+                           principal_pk, public_key, valid_from, valid_until, source_revision, key_id
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                        ON CONFLICT(principal_pk, public_key) DO UPDATE SET
                            valid_until = excluded.valid_until,
-                           source_revision = excluded.source_revision"#,
+                           source_revision = excluded.source_revision,
+                           key_id = excluded.key_id"#,
                     params![
                         handle,
                         encoded,
                         resolved_at,
                         descriptor.valid_until,
                         descriptor.revision,
+                        iota_identity::file_signing_key_id(key).map_err(|_| crate::storage_error::StorageError::Other("invalid file signing key".into()))?,
                     ],
                 )?;
             }
@@ -866,6 +958,7 @@ fn load_principal(
         crate::storage_error::StorageError::Other("stored principal user ID is negative".into())
     })?;
     Ok(Some(ResolvedPrincipal {
+        proof: None,
         principal: PrincipalId { authority, user_id },
         handle: PrincipalHandle(handle),
         username,

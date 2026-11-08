@@ -376,7 +376,7 @@ pub fn manifest(owner: i64, key: &FileKey) -> Result<Value, StorageError> {
         let own = owner_principal_on(conn, owner)?;
         let (id, manifest, asset, state) = version_on(conn, owner, key)?;
         if own != key.origin {
-            sharing::require_recipient_on(conn, owner, key)?;
+            sharing::require_grant_on(conn, owner, key, true)?;
         }
         let metadata_revision: i64 = conn.query_row(
             "SELECT metadata_revision FROM file_versions WHERE id=?1",
@@ -384,7 +384,7 @@ pub fn manifest(owner: i64, key: &FileKey) -> Result<Value, StorageError> {
             |r| r.get(0),
         )?;
         let progress: Option<(i64,i64,Option<String>,i64)> = conn.query_row("SELECT COALESCE(u.received,0),j.attempts,j.last_error,j.next_attempt_at FROM file_replication_jobs j LEFT JOIN user_asset_uploads u ON u.user_id=?1 AND u.upload_id=j.upload_id WHERE j.version_id=?2",params![owner,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-        let proof: Option<String> = conn.query_row("SELECT proof FROM file_share_grants WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND state IN ('offered','accepted') AND expires_at>?5 ORDER BY revision DESC LIMIT 1",params![owner,handle_on(conn,&key.origin)?,key.file_id,key.version,sync::now_millis()],|r|r.get(0)).optional()?.flatten();
+        let proof: Option<String> = conn.query_row("SELECT proof FROM file_share_grants WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND state IN ('offered','accepted','rejected') AND expires_at>?5 ORDER BY revision DESC LIMIT 1",params![owner,handle_on(conn,&key.origin)?,key.file_id,key.version,sync::now_millis()],|r|r.get(0)).optional()?.flatten();
         let reserved: i64 = conn.query_row("SELECT COALESCE(SUM(size),0) FROM user_asset_uploads WHERE user_id=?1 AND state='uploading'",[owner],|r|r.get(0))?;
         Ok(
             json!({"manifest":manifest,"proof":proof.map(|proof|decode::<Value>(&proof)).transpose()?,"metadata_revision":metadata_revision,"asset_id":asset,"state":state,"transfer":progress.map(|(offset,attempts,error,next_attempt_at)|json!({"offset":offset,"attempts":attempts,"error":error,"next_attempt_at":next_attempt_at})),"reserved_bytes":reserved}),
@@ -392,11 +392,32 @@ pub fn manifest(owner: i64, key: &FileKey) -> Result<Value, StorageError> {
     })
 }
 
+fn push_page_item<T: Serialize>(
+    items: &mut Vec<T>,
+    bytes: &mut usize,
+    item: T,
+) -> Result<bool, StorageError> {
+    if items.len() == PAGE_SIZE {
+        return Ok(false);
+    }
+    let size = encode(&item)?.len() + usize::from(!items.is_empty());
+    if *bytes + size > MAX_CONTROL_BYTES {
+        if items.is_empty() {
+            return Err(StorageError::AssetResourceLimit("file control record"));
+        }
+        return Ok(false);
+    }
+    *bytes += size;
+    items.push(item);
+    Ok(true)
+}
+
 pub fn list_page(owner: i64, page: &ListPage) -> Result<Value, StorageError> {
     check(page.after >= 0)?;
     db::with_db(|conn| {
         owner_principal_on(conn, owner)?;
         let mut items = Vec::new();
+        let mut bytes = encode(&json!({"items":[],"next":i64::MAX}))?.len();
         let mut next = page.after;
         let (sql, filter) = if page.namespace == "folders" {
             (
@@ -411,7 +432,7 @@ pub fn list_page(owner: i64, page: &ListPage) -> Result<Value, StorageError> {
             )
         } else if let Some(chat) = page.namespace.strip_prefix("chat:") {
             (
-                "SELECT g.id,g.manifest FROM file_share_grants g WHERE g.storage_user_id=?1 AND g.chat_id=?2 AND g.state IN ('offered','accepted') AND g.expires_at > CAST((julianday('now')-2440587.5)*86400000 AS INTEGER) AND g.id>?3 AND NOT EXISTS(SELECT 1 FROM file_share_grants newer WHERE newer.storage_user_id=g.storage_user_id AND newer.origin_principal=g.origin_principal AND newer.file_id=g.file_id AND newer.chat_id=g.chat_id AND newer.version>g.version AND newer.state IN ('offered','accepted') AND newer.expires_at>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)) AND NOT EXISTS(SELECT 1 FROM file_placements p WHERE p.storage_user_id=g.storage_user_id AND p.origin_principal=g.origin_principal AND p.file_id=g.file_id AND p.folder_id='chat:'||g.chat_id AND p.deleted=0 AND json_extract(p.payload,'$.hidden')=1) ORDER BY g.id LIMIT ?4",
+                "SELECT g.id,g.manifest FROM file_share_grants g WHERE g.storage_user_id=?1 AND g.chat_id=?2 AND g.state IN ('offered','accepted','rejected') AND g.expires_at > CAST((julianday('now')-2440587.5)*86400000 AS INTEGER) AND g.id>?3 AND NOT EXISTS(SELECT 1 FROM file_share_grants newer WHERE newer.storage_user_id=g.storage_user_id AND newer.origin_principal=g.origin_principal AND newer.file_id=g.file_id AND newer.chat_id=g.chat_id AND newer.version>g.version AND newer.state IN ('offered','accepted','rejected') AND newer.expires_at>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)) AND NOT EXISTS(SELECT 1 FROM file_placements p WHERE p.storage_user_id=g.storage_user_id AND p.origin_principal=g.origin_principal AND p.file_id=g.file_id AND p.folder_id='chat:'||g.chat_id AND p.deleted=0 AND json_extract(p.payload,'$.hidden')=1) ORDER BY g.id LIMIT ?4",
                 chat,
             )
         } else if page.namespace == "versions" {
@@ -427,11 +448,10 @@ pub fn list_page(owner: i64, page: &ListPage) -> Result<Value, StorageError> {
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
         )? {
             let (id, payload) = row?;
-            if items.len() == PAGE_SIZE {
+            if !push_page_item(&mut items, &mut bytes, decode::<Value>(&payload)?)? {
                 return Ok(json!({"items":items,"next":next}));
             }
             next = id;
-            items.push(decode::<Value>(&payload)?);
         }
         Ok(json!({"items":items,"next":null}))
     })
@@ -443,6 +463,7 @@ fn versions_page(conn: &Connection, owner: i64, page: &ListPage) -> Result<Value
     let origin = handle_on(conn, principal)?;
     let mut statement = conn.prepare("SELECT id,manifest FROM file_versions v WHERE storage_user_id=?1 AND file_id=?2 AND origin_principal=?3 AND state!='deleted' AND id>?4 AND (?6 OR (EXISTS(SELECT 1 FROM file_share_grants g WHERE g.storage_user_id=v.storage_user_id AND g.origin_principal=v.origin_principal AND g.file_id=v.file_id AND g.version=v.version AND g.state IN ('offered','accepted') AND g.expires_at>?7) AND NOT EXISTS(SELECT 1 FROM blocked_users b WHERE b.user_id=?1 AND b.blocked_principal=?3))) ORDER BY id LIMIT ?5")?;
     let mut items = Vec::new();
+    let mut bytes = encode(&json!({"items":[],"next":i64::MAX}))?.len();
     let mut next = page.after;
     let mut more = false;
     for row in statement.query_map(
@@ -459,12 +480,11 @@ fn versions_page(conn: &Connection, owner: i64, page: &ListPage) -> Result<Value
     )? {
         let (id, payload) = row?;
         let m: FileManifest = decode(&payload)?;
-        if items.len() == PAGE_SIZE {
+        if !push_page_item(&mut items, &mut bytes, m)? {
             more = true;
             break;
         }
         next = id;
-        items.push(m);
     }
     Ok(json!({"items":items,"next":if more { Some(next) } else { None }}))
 }
@@ -475,6 +495,7 @@ fn shares_page(conn: &Connection, owner: i64, page: &ListPage) -> Result<Value, 
     let origin_handle = handle_on(conn, origin)?;
     let mut statement = conn.prepare("SELECT g.id,g.version,g.chat_id,g.revision,g.state,g.expires_at,p.authority_id,p.remote_user_id FROM file_share_grants g JOIN principals p ON p.principal_pk=g.recipient_principal WHERE g.storage_user_id=?1 AND g.file_id=?2 AND g.origin_principal=?3 AND g.id>?4 ORDER BY g.id LIMIT ?5")?;
     let mut items = Vec::new();
+    let mut bytes = encode(&json!({"items":[],"next":i64::MAX}))?.len();
     let mut next = page.after;
     let mut more = false;
     for row in statement.query_map(
@@ -499,12 +520,12 @@ fn shares_page(conn: &Connection, owner: i64, page: &ListPage) -> Result<Value, 
         },
     )? {
         let (id, version, chat_id, revision, state, expires_at, authority, user_id) = row?;
-        if items.len() == PAGE_SIZE {
+        let item = json!({"key":{"origin":origin,"file_id":page.folder_id,"version":version},"chat_id":chat_id,"grant_revision":revision,"state":state,"expires_at":expires_at,"recipient":{"authority":authority,"user_id":user_id}});
+        if !push_page_item(&mut items, &mut bytes, item)? {
             more = true;
             break;
         }
         next = id;
-        items.push(json!({"key":{"origin":origin,"file_id":page.folder_id,"version":version},"chat_id":chat_id,"grant_revision":revision,"state":state,"expires_at":expires_at,"recipient":{"authority":authority,"user_id":user_id}}));
     }
     Ok(json!({"items":items,"next":if more {Some(next)} else {None}}))
 }
@@ -522,6 +543,8 @@ pub fn changes(owner: i64, page: &ChangesPage) -> Result<Value, StorageError> {
         check(upper >= page.after && upper <= head)?;
         let mut statement = conn.prepare("SELECT sequence,kind,payload FROM file_changes WHERE storage_user_id=?1 AND sequence>?2 AND sequence<=?3 ORDER BY sequence LIMIT ?4")?;
         let mut events = Vec::new();
+        let mut bytes =
+            encode(&json!({"events":[],"next":i64::MAX,"upper":i64::MAX,"more":false}))?.len();
         let mut next = page.after;
         let mut more = false;
         for row in statement.query_map(
@@ -535,14 +558,13 @@ pub fn changes(owner: i64, page: &ChangesPage) -> Result<Value, StorageError> {
             },
         )? {
             let (sequence, kind, payload) = row?;
-            if events.len() == PAGE_SIZE {
+            let event =
+                json!({"sequence":sequence,"kind":kind,"payload":decode::<Value>(&payload)?});
+            if !push_page_item(&mut events, &mut bytes, event)? {
                 more = true;
                 break;
             }
             next = sequence;
-            events.push(
-                json!({"sequence":sequence,"kind":kind,"payload":decode::<Value>(&payload)?}),
-            );
         }
         Ok(json!({"events":events,"next":if more {next} else {upper},"upper":upper,"more":more}))
     })

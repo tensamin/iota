@@ -13,6 +13,21 @@ impl CompositeIdentityResolver {
 
 #[async_trait]
 impl IdentityResolver for CompositeIdentityResolver {
+    async fn file_signing_key(
+        &self,
+        principal: &PrincipalId,
+        key_id: &str,
+    ) -> Result<FileSigningKeyProofV1, IdentityError> {
+        for resolver in &self.resolvers {
+            match resolver.file_signing_key(principal, key_id).await {
+                Ok(proof) => return Ok(proof),
+                Err(IdentityError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(IdentityError::NotFound)
+    }
+
     async fn resolve_current_principal(
         &self,
         principal: &PrincipalId,

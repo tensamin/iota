@@ -8,7 +8,7 @@ fn client_acknowledgement_uses_canonical_identity_and_rejects_ambiguity() -> Res
     use rusqlite::params;
 
     let mut conn = Connection::open_in_memory()?;
-    run_migrations_on_connection(&conn)?;
+    initialize_schema(&conn)?;
     conn.execute_batch(
             "INSERT INTO principals (principal_pk, authority_kind, authority_id, remote_user_id, last_resolved_at)
                 VALUES (70, 'omega', 'omega:test', 7, 0), (71, 'omega', 'omega:test', 8, 0), (72, 'omega', 'omega:test', 9, 0);",
@@ -167,7 +167,7 @@ fn client_acknowledgement_uses_canonical_identity_and_rejects_ambiguity() -> Res
 #[test]
 fn replay_schema_scopes_equal_numeric_signers_by_principal() -> Result<(), StorageError> {
     let conn = Connection::open_in_memory()?;
-    run_migrations_on_connection(&conn)?;
+    initialize_schema(&conn)?;
     conn.execute(
             "INSERT INTO principals (authority_kind, authority_id, remote_user_id, descriptor_revision, last_resolved_at) VALUES ('omega', 'omega:first', 7, 0, 0)",
             [],
@@ -195,7 +195,7 @@ fn replay_schema_scopes_equal_numeric_signers_by_principal() -> Result<(), Stora
 #[test]
 fn principal_identity_is_scoped_by_authority() -> Result<(), StorageError> {
     let conn = Connection::open_in_memory()?;
-    run_migrations_on_connection(&conn)?;
+    initialize_schema(&conn)?;
     conn.execute(
             "INSERT INTO principals (authority_kind, authority_id, remote_user_id, last_resolved_at) VALUES ('omega', 'omega:first', 7, 1)",
             [],
@@ -216,7 +216,7 @@ fn principal_identity_is_scoped_by_authority() -> Result<(), StorageError> {
 #[test]
 fn local_identity_allocator_starts_at_one() -> Result<(), StorageError> {
     let conn = Connection::open_in_memory()?;
-    run_migrations_on_connection(&conn)?;
+    initialize_schema(&conn)?;
     let next: i64 = conn.query_row(
         "SELECT next_user_id FROM local_identity_allocator WHERE singleton = 1",
         [],
@@ -229,7 +229,7 @@ fn local_identity_allocator_starts_at_one() -> Result<(), StorageError> {
 #[test]
 fn equal_numeric_users_remain_separate_in_application_storage() -> Result<(), StorageError> {
     let conn = Connection::open_in_memory()?;
-    run_migrations_on_connection(&conn)?;
+    initialize_schema(&conn)?;
     conn.execute(
             "INSERT INTO principals (authority_kind, authority_id, remote_user_id, descriptor_revision, last_resolved_at) VALUES ('iota', 'iota:first', 7, 0, 0)",
             [],
@@ -312,7 +312,7 @@ fn equal_numeric_users_remain_separate_in_application_storage() -> Result<(), St
 #[test]
 fn observed_remote_references_receive_authority_scoped_principals() -> Result<(), StorageError> {
     let conn = Connection::open_in_memory()?;
-    run_migrations_on_connection(&conn)?;
+    initialize_schema(&conn)?;
     conn.execute(
             "INSERT INTO identity_configuration (singleton, omega_authority_id) VALUES (1, 'omega:omega-a.example')",
             [],

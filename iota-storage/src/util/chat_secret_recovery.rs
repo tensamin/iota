@@ -366,7 +366,7 @@ pub enum InitializationState {
     Conflict,
 }
 
-// Force both equality keys of the migration-built index. No JSON work or
+// Force both equality keys of the index. No JSON work or
 // history-dependent filtering may precede the 501-row availability bound.
 const INITIALIZATION_INBOX_SQL: &str =
     "SELECT signer_principal,message_id,state,prepared_operation,initial_secret_ambiguous

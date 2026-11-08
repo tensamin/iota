@@ -6,9 +6,8 @@ use iota_connection::connection_handler::{PeerRouter, RouteDestination, RouteErr
 use iota_connection::relay_service::{RelayNodeIdentity, RelayService};
 use iota_identity::{
     AuthorityId, AuthorityKind, AuthorityLocator, CompositeIdentityResolver, IdentityError,
-    IdentityResolver, IotaNodeId, LocalUserStore, NodeDirectory, NodeIdentityResolver,
-    PrincipalHome, PrincipalId, PrincipalStore, ResolutionContext, ResolvedNodeIdentity,
-    ResolvedPrincipal, UserAddress,
+    IdentityResolver, IotaNodeId, LocalUserStore, NodeDirectory, NodeIdentityResolver, PrincipalId,
+    PrincipalStore, ResolutionContext, ResolvedNodeIdentity, ResolvedPrincipal, UserAddress,
 };
 use mtp::codec::CommunicationValue;
 use omikron_connector::{OmikronClient, OmikronConnection};
@@ -73,9 +72,7 @@ impl DaemonServices {
             Arc::new(iota_storage::identity::SqliteLocalUserStore);
         let local_identity: Arc<dyn IdentityResolver> =
             Arc::new(iota_storage::identity::LocalIdentityResolver::new(
-                identity.authority_id().clone(),
-                AuthorityKind::Iota,
-                PrincipalHome::Iota(identity.node_id().clone()),
+                identity.clone(),
                 local_users.clone(),
                 principals.clone(),
             ));
@@ -97,12 +94,16 @@ impl DaemonServices {
                 iota_storage::authority_directory::SqliteAuthorityDirectory,
             )),
         );
-        let remote_omega: Arc<dyn IdentityResolver> =
-            Arc::new(other_iota::RemoteOmegaResolver::new(
+        let remote_omega: Arc<dyn IdentityResolver> = Arc::new(
+            other_iota::RemoteOmegaResolver::new(
                 federation_client,
                 principals.clone(),
                 node_directory,
-            ));
+            )
+            .with_authority_directory(Arc::new(
+                iota_storage::authority_directory::SqliteAuthorityDirectory,
+            )),
+        );
         let identities: Arc<dyn IdentityResolver> =
             Arc::new(CompositeIdentityResolver::new(vec![
                 local_identity,
@@ -211,6 +212,12 @@ impl DaemonServices {
         let omega_host = omikron_connector::omega_discovery::omega_host();
         let locator = AuthorityLocator::new(omega_host)
             .expect("the configured Omega host is a valid authority locator");
+        let web = &iota_storage::util::config_util::CONFIG.load().web;
+        let federation_client: Arc<dyn other_iota::FederationIdentityClient> =
+            Arc::new(other_iota::HttpFederationIdentityClient::new(
+                web.allow_lan_federation,
+                web.allow_raw_ip_federation,
+            ));
         let identities: Arc<dyn IdentityResolver> =
             Arc::new(omikron_connector::identity::OmegaIdentityResolver::new(
                 client.clone(),
@@ -220,12 +227,7 @@ impl DaemonServices {
                 node_identity
                     .as_ref()
                     .and_then(|identity| identity.node_id()),
-            ));
-        let web = &iota_storage::util::config_util::CONFIG.load().web;
-        let federation_client: Arc<dyn other_iota::FederationIdentityClient> =
-            Arc::new(other_iota::HttpFederationIdentityClient::new(
-                web.allow_lan_federation,
-                web.allow_raw_ip_federation,
+                federation_client.clone(),
             ));
         let nodes: Arc<dyn NodeDirectory> =
             Arc::new(iota_storage::node_directory::SqliteNodeDirectory);
@@ -242,11 +244,16 @@ impl DaemonServices {
                         iota_storage::authority_directory::SqliteAuthorityDirectory,
                     )),
                 ),
-                Arc::new(other_iota::RemoteOmegaResolver::new(
-                    federation_client,
-                    principals.clone(),
-                    nodes,
-                )),
+                Arc::new(
+                    other_iota::RemoteOmegaResolver::new(
+                        federation_client,
+                        principals.clone(),
+                        nodes,
+                    )
+                    .with_authority_directory(Arc::new(
+                        iota_storage::authority_directory::SqliteAuthorityDirectory,
+                    )),
+                ),
             ])
             .expect("centralized and remote identity resolvers compose"),
         );

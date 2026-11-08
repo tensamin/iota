@@ -5,8 +5,8 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.89"
-mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "87c535650a3a33b166139b02cdd7327d412d3bca", features = ["client", "crypto", "pipes", "web-server"] }
-tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "ccbdcb81df00d626da16071c4c8b0b1ec803f87c" }
+mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "eef7562be64e77d8c29ba5af6df7596073e3c9f2", features = ["client", "crypto", "pipes", "web-server"] }
+tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "d6183368f3e2b91b3c3d86eae3802654b349be10" }
 thiserror = "2"
 serde_json = "1"
 tokio-util = "0.7"

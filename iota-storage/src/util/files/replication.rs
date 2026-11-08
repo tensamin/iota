@@ -1,6 +1,7 @@
 use super::*;
 use crate::util::user_assets;
 
+#[derive(Clone)]
 pub struct Job {
     pub id: i64,
     pub owner: i64,
@@ -87,10 +88,10 @@ pub fn cancel(owner: i64, key: &FileKey) -> Result<(), StorageError> {
     Ok(())
 }
 
-pub fn jobs() -> Result<Vec<Job>, StorageError> {
+pub fn jobs(source_node: Option<&str>) -> Result<Vec<Job>, StorageError> {
     db::with_db(|conn| {
-        let mut stmt = conn.prepare("SELECT v.id,v.storage_user_id,v.manifest,j.upload_id,j.asset_id,g.source_node,g.chat_id,g.revision FROM file_replication_jobs j JOIN file_versions v ON v.id=j.version_id JOIN file_share_grants g ON g.storage_user_id=v.storage_user_id AND g.origin_principal=v.origin_principal AND g.file_id=v.file_id AND g.version=v.version JOIN hosted_principals h ON h.local_user_id=v.storage_user_id AND h.principal_handle=g.recipient_principal WHERE g.state='accepted' AND g.expires_at>?1 AND j.next_attempt_at<=?1 GROUP BY v.id ORDER BY j.next_attempt_at,v.id LIMIT 8")?;
-        let rows = stmt.query_map([sync::now_millis()], |r| {
+        let mut stmt = conn.prepare("SELECT v.id,v.storage_user_id,v.manifest,j.upload_id,j.asset_id,g.source_node,g.chat_id,g.revision FROM file_replication_jobs j JOIN file_versions v ON v.id=j.version_id JOIN file_share_grants g ON g.storage_user_id=v.storage_user_id AND g.origin_principal=v.origin_principal AND g.file_id=v.file_id AND g.version=v.version JOIN hosted_principals h ON h.local_user_id=v.storage_user_id AND h.principal_handle=g.recipient_principal WHERE g.state='accepted' AND g.expires_at>?1 AND j.next_attempt_at<=?1 AND (?2 IS NULL OR g.source_node=?2) GROUP BY v.id ORDER BY j.next_attempt_at,v.id LIMIT 8")?;
+        let rows = stmt.query_map(params![sync::now_millis(), source_node], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, i64>(1)?,
@@ -125,6 +126,25 @@ pub fn jobs() -> Result<Vec<Job>, StorageError> {
         }
         Ok(jobs)
     })
+}
+
+pub fn copy_local_batch(job: &Job, cancelled: impl Fn() -> bool) -> Result<(), StorageError> {
+    let mut offset = progress(job)?;
+    for _ in 0..16 {
+        if cancelled() {
+            return Ok(());
+        }
+        if offset == job.manifest.ciphertext_size {
+            return complete(job);
+        }
+        let mut request = job.request.clone();
+        request.offset = offset;
+        let bytes = read(&request, None)?;
+        check(!bytes.is_empty() && bytes.len() <= REPLICA_CHUNK_BYTES)?;
+        append(job, offset, &bytes)?;
+        offset += bytes.len() as i64;
+    }
+    Ok(())
 }
 
 pub fn progress(job: &Job) -> Result<i64, StorageError> {

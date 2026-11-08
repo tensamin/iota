@@ -23,22 +23,54 @@ impl PeerManager {
                     if let Err(error) = iota_storage::util::files::maintenance() {
                         iota_logger::log!("File maintenance failed: {}",error);
                     }
-                    let jobs = match replication::jobs() {
+                    let jobs = match replication::jobs(None) {
                         Ok(jobs) => jobs,
                         Err(error) => { iota_logger::log!("Cannot load file replication jobs: {}",error); continue; }
                     };
                     for job in jobs {
-                        let result = tokio::select! {
-                            _ = manager.shutdown.cancelled() => return,
-                            result = tokio::time::timeout(std::time::Duration::from_secs(30),manager.transfer_file_ranges(&job)) => result,
+                        let result = if job.source_node == manager.identity.node_id().as_str() {
+                            manager.copy_local_file(job.clone()).await
+                        } else {
+                            tokio::select! {
+                                _ = manager.shutdown.cancelled() => return,
+                                result = tokio::time::timeout(std::time::Duration::from_secs(30),manager.transfer_file_ranges(&job)) => {
+                                    result.map_err(|_| "file replication timed out".to_string()).and_then(|result| result)
+                                }
+                            }
                         };
-                        if !matches!(result,Ok(Ok(()))) {
-                            let _ = replication::failed(&job);
+                        if manager.shutdown.is_cancelled() { return; }
+                        if let Err(error) = result {
+                            iota_logger::log!("File replication job {} failed: {}", job.id, error);
+                            if let Err(error) = replication::failed(&job) {
+                                iota_logger::log!("Cannot mark file replication job {} failed: {}", job.id, error);
+                            }
                         }
                     }
                 }
             });
         }
+    }
+
+    async fn copy_local_file(&self, job: Job) -> Result<(), String> {
+        let cancellation = self.shutdown.child_token();
+        let worker_cancellation = cancellation.clone();
+        let mut copy = tokio::task::spawn_blocking(move || {
+            replication::copy_local_batch(&job, || worker_cancellation.is_cancelled())
+        });
+        tokio::select! {
+            _ = self.shutdown.cancelled() => {}
+            result = tokio::time::timeout(std::time::Duration::from_secs(30), &mut copy) => {
+                if let Ok(result) = result {
+                    return result.map_err(|error| error.to_string())?.map_err(|error| error.to_string());
+                }
+            }
+        }
+        cancellation.cancel();
+        // Dropping a blocking task would detach it and let a retry overlap the copy.
+        copy.await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        Err("local file replication interrupted".into())
     }
 
     async fn transfer_file_ranges(self: &Arc<Self>, job: &Job) -> Result<(), String> {
@@ -49,12 +81,8 @@ impl PeerManager {
             }
             let mut request = job.request.clone();
             request.offset = offset;
-            let bytes = if job.source_node == self.identity.node_id().as_str() {
-                replication::read(&request, None).map_err(|e| e.to_string())?
-            } else {
-                let node = IotaNodeId::new(&job.source_node).map_err(|e| e.to_string())?;
-                self.request_file_range(&node, &request).await?
-            };
+            let node = IotaNodeId::new(&job.source_node).map_err(|e| e.to_string())?;
+            let bytes = self.request_file_range(&node, &request).await?;
             if bytes.is_empty() || bytes.len() > REPLICA_CHUNK_BYTES {
                 return Err("invalid replica range".into());
             }

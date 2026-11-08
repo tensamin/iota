@@ -117,10 +117,8 @@ async fn proposals_remain_unaccepted_until_fresh_fenced_proof() {
         }
         return;
     };
-    let directory = std::path::Path::new("/tmp/opencode")
-        .join(format!("initial-proposals-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&directory).unwrap();
-    initialize(&directory);
+    let directory = tempfile::tempdir().unwrap();
+    initialize(directory.path());
     let fixture = Fixture::new(false);
     let peer = Arc::new(Peer {
         node: fixture.destination.clone(),
