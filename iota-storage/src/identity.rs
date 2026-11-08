@@ -576,8 +576,10 @@ impl iota_identity::IdentityResolver for LocalIdentityResolver {
                 "local principal ownership changed".into(),
             ));
         }
-        let signed = SqliteLocalDescriptorPublisher::new(self.identity.clone())
-            .principal_descriptor(user)?;
+        let signed = SignedPrincipalDescriptor::sign(
+            self.principals.local_principal_descriptor(user)?,
+            &self.identity.keyring(),
+        )?;
         resolved.proof = Some(iota_identity::PrincipalProofV1 {
             descriptor: signed.to_wire_v1()?,
             authority_public_key: self

@@ -5,26 +5,39 @@ impl RemoteOmegaResolver {
         &self,
         authority: &AuthorityId,
     ) -> Result<Option<(AuthorityLocator, DiscoveredAuthority)>, IdentityError> {
-        let stored = match &self.authority_directory {
-            Some(directory) => directory.locators_for(authority)?.into_iter().next(),
-            None => None,
+        let mut locators = match &self.authority_directory {
+            Some(directory) => directory.locators_for(authority)?,
+            None => Vec::new(),
         };
-        let locator = stored.or_else(|| {
-            self.authorities.read().ok().and_then(|authorities| {
+        if let Ok(authorities) = self.authorities.read() {
+            locators.extend(
                 authorities
                     .iter()
-                    .find(|(_, found)| &found.authority_id == authority)
-                    .map(|(locator, _)| locator.clone())
-            })
-        });
-        let Some(locator) = locator else {
-            return Ok(None);
-        };
-        let discovered = self.client.discover(&locator).await?;
-        if discovered.service != AuthorityKind::Omega || &discovered.authority_id != authority {
-            return Err(IdentityError::KeyPinMismatch);
+                    .filter(|(_, found)| &found.authority_id == authority)
+                    .map(|(locator, _)| locator.clone()),
+            );
         }
-        Ok(Some((locator, discovered)))
+        let mut seen = std::collections::HashSet::new();
+        let mut last_error = None;
+        for locator in locators {
+            if !seen.insert(locator.clone()) {
+                continue;
+            }
+            match self.client.discover(&locator).await {
+                Ok(discovered)
+                    if discovered.service == AuthorityKind::Omega
+                        && &discovered.authority_id == authority =>
+                {
+                    return Ok(Some((locator, discovered)));
+                }
+                Ok(_) => last_error = Some(IdentityError::KeyPinMismatch),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        match last_error {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
     }
 
     pub fn new(

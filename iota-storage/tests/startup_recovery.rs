@@ -2,6 +2,8 @@ use std::{collections::BTreeMap, path::Path, process::Command};
 
 use iota_storage::util::db;
 
+const PROBE_COMPLETED: &str = "startup recovery probe completed";
+
 fn files(directory: &Path) -> BTreeMap<String, Vec<u8>> {
     std::fs::read_dir(directory)
         .unwrap()
@@ -17,7 +19,7 @@ fn files(directory: &Path) -> BTreeMap<String, Vec<u8>> {
 }
 
 fn probe(directory: &Path, mode: &str, backup: &Path) {
-    let status = Command::new(std::env::current_exe().unwrap())
+    let output = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
             "startup_refuses_corruption_and_prior_recovery_until_explicit_restore",
@@ -26,9 +28,16 @@ fn probe(directory: &Path, mode: &str, backup: &Path) {
         .env("IOTA_RECOVERY_PROBE_DIRECTORY", directory)
         .env("IOTA_RECOVERY_PROBE_MODE", mode)
         .env("IOTA_RECOVERY_PROBE_BACKUP", backup)
-        .status()
+        .output()
         .unwrap();
-    assert!(status.success(), "startup probe failed in mode {mode}");
+    assert!(
+        output.status.success(),
+        "startup probe failed in mode {mode}: {output:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(PROBE_COMPLETED),
+        "startup probe did not execute in mode {mode}: {output:?}"
+    );
 }
 
 #[test]
@@ -69,6 +78,7 @@ fn startup_refuses_corruption_and_prior_recovery_until_explicit_restore() {
             }
             mode => panic!("unknown startup probe {mode}"),
         }
+        println!("{PROBE_COMPLETED}");
         return;
     }
 
