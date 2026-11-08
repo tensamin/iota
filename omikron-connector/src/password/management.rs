@@ -150,11 +150,13 @@ impl OmikronConnection {
             .remove_if(&enrollment_id, |_, pending| pending.user_id == user_id)
             .ok_or(Failure::Expired)?;
         if pending.user_id != user_id
-            || pending.created.elapsed() >= self.password_auth.pending_ttl
             || pending.public_key != expected_public_key
             || pending.authorization_generation != authorization_generation
         {
             return Err(Failure::Unauthorized);
+        }
+        if pending.created.elapsed() >= self.password_auth.pending_ttl {
+            return Err(Failure::Expired);
         }
         let upload = bytes(opened.content(), DataType::OpaqueMessage, MAX_OPAQUE_BYTES)?;
         let encrypted = bytes(

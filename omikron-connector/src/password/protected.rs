@@ -1,7 +1,7 @@
 use iota_storage::{users::user_manager, util::protected_replay};
 use mtp::{
     codec::{
-        CommunicationType, CommunicationValue, DataValue, ProtectedMessageBuilder,
+        CommunicationType, CommunicationValue, DataType, DataValue, ProtectedMessageBuilder,
         ProtectedOpenOptions, ProtectionPolicy, ReplayError, ReplayGuard, VerifiedProtectedMessage,
         open_protected_with_checked, open_protected_with_without_replay,
     },
@@ -49,12 +49,29 @@ impl OmikronConnection {
         let Some(map) = frame.type_map() else {
             return;
         };
-        let Ok(payload) = failure.payload(map) else {
+        let Ok(mut payload) = failure.payload(map) else {
             return;
         };
         if let Ok((opened, _, _)) = self.open_password_command(frame, kind, false).await
             && let Ok(user_id) = i64::try_from(opened.signer_id())
         {
+            // Enrollment expiry is returned before commit. Bind that rejection
+            // to the command, not its unsigned relay correlation ID.
+            if matches!(kind, CommunicationType::PasswordEnrollmentFinish)
+                && matches!(failure, tau::password::Failure::Expired)
+            {
+                use sha2::{Digest, Sha256};
+                let Ok(command) = frame.clone().without_id().to_bytes() else {
+                    return;
+                };
+                let Some(field) = DataType::Sha256.try_to_id(map) else {
+                    return;
+                };
+                let DataValue::Container(fields) = &mut payload else {
+                    return;
+                };
+                fields.push((field, DataValue::Bytes(Sha256::digest(command).to_vec())));
+            }
             if let Ok(response) = self
                 .protected_response(
                     frame,
@@ -119,8 +136,8 @@ impl OmikronConnection {
                 &mut replay,
             )
         } else {
-            // Only read-only receipt lookup uses this path. It cannot consume
-            // an enrollment, invoke OPAQUE finish, or mutate a credential.
+            // Receipt lookup and authenticated failure construction are read-only.
+            // They cannot consume an enrollment, invoke OPAQUE finish, or mutate a credential.
             open_protected_with_without_replay(
                 frame,
                 &[keyring.as_ref()],
