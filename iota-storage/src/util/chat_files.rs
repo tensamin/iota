@@ -11,7 +11,6 @@ pub use deletion::{
     apply_remote_delete_for_principal_in_tx, delete_edit_history, delete_edit_history_in_tx,
     delete_message, delete_message_for_principal, delete_message_for_principal_in_tx,
     flag_deleted_by_external, hard_delete_message, purge_message, purge_message_in_tx,
-    remove_message_history, remove_message_history_by_relay_identity, remove_message_history_in_tx,
 };
 mod reactions;
 pub use reactions::{
@@ -20,8 +19,9 @@ pub use reactions::{
 };
 mod queries;
 pub use queries::{
-    add_message, add_message_in_tx, get_all_messages, get_message, get_message_with_offset,
-    get_messages, get_messages_by_ids, get_messages_for_principal,
+    CurrentMessage, add_message, add_message_in_tx, get_all_messages, get_message,
+    get_message_by_relay, get_message_with_offset, get_messages, get_messages_by_ids,
+    get_messages_for_principal,
 };
 mod receipts;
 use crate::storage_error::StorageError;

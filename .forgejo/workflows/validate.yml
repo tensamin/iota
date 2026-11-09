@@ -9,6 +9,19 @@ env:
   NIX_CONFIG: experimental-features = nix-command flakes
 
 jobs:
+  delivery:
+    name: Validate delivery and durable storage
+    runs-on: host
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Check delivery and storage formatting
+        run: nix develop -c cargo fmt -p client -p iota-connection -p iota-storage --check
+      - name: Check delivery and storage lints
+        run: nix develop -c cargo clippy -p client -p iota-connection -p iota-storage --locked --all-targets -- -D warnings
+      - name: Exercise real delivery, replay, retention and synchronization
+        run: nix develop -c cargo test -p client -p iota-connection -p iota-storage --locked
   authentication:
     name: Validate authentication
     runs-on: host

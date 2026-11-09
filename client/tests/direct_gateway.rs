@@ -392,6 +392,12 @@ async fn hosted_client_loads_state_originates_relay_and_receives_delivery() {
         1,
         "offline acceptance must retain durable delivery"
     );
+    iota_storage::util::message_storage_policy::set(
+        1,
+        iota_storage::util::message_storage_policy::MessageHistoryMode::DeleteAfterClientDelivery,
+        iota_storage::util::message_storage_policy::MessageRetention::Forever,
+    )
+    .unwrap();
     let client = mtp::client::MTPClient::auth_connect(
         mtp::client::ClientConfig::new(format!("https://{address}/"))
             .with_client_id(1)
@@ -455,20 +461,15 @@ async fn hosted_client_loads_state_originates_relay_and_receives_delivery() {
     );
     iota_storage::util::relay_queue::resume_client_deliveries(1).unwrap();
     LocalDeliverySink::deliver(manager.as_ref(), local_handle, offline.clone()).await;
+    let delivery = tokio::time::timeout(std::time::Duration::from_secs(5), client.receive())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(100), client.receive())
-            .await
-            .is_err(),
-        "ready work must wait until the client durably applies its initial snapshot"
+        delivery.is_type(CommunicationType::Relay),
+        "notification delivery must not require a durable account checkpoint"
     );
     assert_eq!(pending_offline(), 1);
-    assert!(
-        client
-            .request(&sync_support::acknowledge(&snapshot, 32), None)
-            .await
-            .unwrap()
-            .is_type(CommunicationType::AccountStateSnapshot)
-    );
 
     let content = CommunicationValue::new(CommunicationType::MessageSend)
         .add_typed_default(DataType::Content, DataValue::Str("ciphertext".into()))
@@ -512,10 +513,6 @@ async fn hosted_client_loads_state_originates_relay_and_receives_delivery() {
     assert_eq!(router.frames.lock().unwrap().len(), 1);
 
     LocalDeliverySink::deliver(manager.as_ref(), local_handle, offline.clone()).await;
-    let delivery = tokio::time::timeout(std::time::Duration::from_secs(5), client.receive())
-        .await
-        .unwrap()
-        .unwrap();
     assert!(delivery.is_type(CommunicationType::Relay));
     assert_eq!(
         delivery.get_data(DataType::SecurePayload),
@@ -538,6 +535,7 @@ async fn hosted_client_loads_state_originates_relay_and_receives_delivery() {
         Some("offline ciphertext")
     );
     let acknowledgement = CommunicationValue::new(CommunicationType::Success)
+        .add_typed_default(DataType::Status, DataValue::Str("notification".into()))
         .with_id(delivery.id().unwrap())
         .add_typed_default(
             DataType::RelayMessageId,
@@ -590,6 +588,123 @@ async fn hosted_client_loads_state_originates_relay_and_receives_delivery() {
     })
     .await
     .unwrap();
+
+    let exact = CommunicationValue::new(CommunicationType::MessageGet)
+        .with_sender(99)
+        .with_id(51)
+        .add_typed_default(
+            DataType::Principal,
+            DataValue::Str(
+                serde_json::to_string(&remote_descriptor.descriptor().principal).unwrap(),
+            ),
+        )
+        .add_typed_default(
+            DataType::RelayMessageId,
+            DataValue::Str("offline-delivery".into()),
+        );
+    let current = client.request(&exact, None).await.unwrap();
+    assert_eq!(
+        iota_storage::util::db::with_db(|conn| Ok(conn.query_row(
+            "SELECT count(*) FROM client_device_sync_state WHERE user_id=1",
+            [],
+            |row| row.get::<_, i64>(0)
+        )?))
+        .unwrap(),
+        0,
+        "Notification receipt must not advance a durable application cursor"
+    );
+    assert!(
+        current.is_type(CommunicationType::MessageGet),
+        "notification receipt must retain application history: {current:?}"
+    );
+    assert_eq!(
+        current.get_str(DataType::Content),
+        Some("offline ciphertext")
+    );
+    let wrong = exact.clone().with_id(52).add_typed_default(
+        DataType::RelayMessageId,
+        DataValue::Str("not-this-message".into()),
+    );
+    assert!(
+        client
+            .request(&wrong, None)
+            .await
+            .unwrap()
+            .is_type(CommunicationType::ErrorNotFound)
+    );
+    let wrong_author = exact.clone().with_id(53).add_typed_default(
+        DataType::Principal,
+        DataValue::Str(serde_json::to_string(&own_principal).unwrap()),
+    );
+    assert!(
+        client
+            .request(&wrong_author, None)
+            .await
+            .unwrap()
+            .is_type(CommunicationType::ErrorNotFound)
+    );
+    let ambiguous = exact
+        .clone()
+        .with_id(54)
+        .add_typed_default(DataType::SendTime, DataValue::SignedNumber(10));
+    assert!(
+        client
+            .request(&ambiguous, None)
+            .await
+            .unwrap()
+            .is_type(CommunicationType::ErrorInvalidData)
+    );
+    let author = SqlitePrincipalStore
+        .get_by_canonical_id(&remote_descriptor.descriptor().principal)
+        .unwrap()
+        .unwrap()
+        .handle;
+    let iota_storage::util::chat_files::CurrentMessage::Available(saved) =
+        iota_storage::util::chat_files::get_message_by_relay(1, author, "offline-delivery")
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("Notification receipt must retain the body");
+    };
+    iota_storage::util::chat_files::apply_remote_edit_for_principal(
+        1,
+        saved.external_user,
+        saved.external_principal.unwrap(),
+        saved.message_time,
+        saved.external_user,
+        "current edited ciphertext",
+    )
+    .unwrap();
+    let edited = client
+        .request(&exact.clone().with_id(55), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        edited.get_str(DataType::Content),
+        Some("current edited ciphertext")
+    );
+    iota_storage::util::chat_files::apply_remote_delete_for_principal(
+        1,
+        saved.external_user,
+        saved.external_principal.unwrap(),
+        saved.message_time,
+        saved.external_user,
+    )
+    .unwrap();
+    assert!(
+        client
+            .request(&exact.clone().with_id(56), None)
+            .await
+            .unwrap()
+            .is_type(CommunicationType::ErrorNotFound)
+    );
+    assert!(
+        client
+            .request(&sync_support::acknowledge(&snapshot, 32), None)
+            .await
+            .unwrap()
+            .is_type(CommunicationType::AccountStateSnapshot)
+    );
 
     let replacement = mtp::client::MTPClient::auth_connect(
         mtp::client::ClientConfig::new(format!("https://{address}/"))

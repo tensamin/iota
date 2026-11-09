@@ -3,8 +3,8 @@ use chat_files::MessageState;
 use iota_identity::{LocalUserId, PrincipalHandle, PrincipalHome};
 use iota_storage::storage_error::StorageError;
 use iota_storage::util::{
-    chat_files, chat_secret_recovery, chats_util, db, e2ee_storage, outgoing_relay, receipt_policy,
-    relay_queue, relay_replay, relay_work,
+    chat_files, chat_secret_recovery, chats_util, db, e2ee_storage, receipt_policy, relay_queue,
+    relay_replay, relay_work,
 };
 use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
 use rusqlite::{Transaction, params};
@@ -1106,14 +1106,6 @@ impl PreparedRelayOperation {
         }
         self.publish_delivery_in_tx(tx)?;
         relay_work::fault_point("after_queue_publication", &self.message_id);
-        for effect in self.effects.iter().filter(|effect| effect.sent_by_self) {
-            outgoing_relay::apply_outgoing_history_policy_in_tx(
-                tx,
-                effect.owner.0,
-                self.signer,
-                &self.message_id,
-            )?;
-        }
         relay_replay::complete_application_in_tx(tx, claim)?;
         relay_replay::mark_queued_in_tx(tx, self.signer, &self.message_id)
     }

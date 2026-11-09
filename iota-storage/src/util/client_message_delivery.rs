@@ -1,6 +1,6 @@
 /* Delivery records bind a specific state-sync response to the messages it contained. */
 use crate::storage_error::StorageError;
-use crate::util::{chat_files, db, message_storage_policy, sync};
+use crate::util::{db, message_storage_policy, sync};
 use rusqlite::{OptionalExtension, params};
 
 pub fn record_sync_delivery(
@@ -76,7 +76,7 @@ pub fn acknowledge_client_state(
             == message_storage_policy::MessageHistoryMode::DeleteAfterClientDelivery
         {
             for message_id in ids {
-                chat_files::remove_message_history_in_tx(tx, user_id, message_id)?;
+                prune_after_sync_in_tx(tx, user_id, message_id, version)?;
             }
         }
         tx.execute("DELETE FROM client_message_deliveries WHERE user_id = ?1 AND session_id = ?2 AND sync_version <= ?3", params![user_id, session_id, version])?;
@@ -91,4 +91,23 @@ pub fn purge_session_deliveries(user_id: i64, session_id: i64) -> Result<usize, 
             params![user_id, session_id],
         )?)
     })
+}
+
+pub(crate) fn prune_after_sync_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    owner: i64,
+    message: i64,
+    through: i64,
+) -> Result<(), StorageError> {
+    let changed = tx.execute(
+        "UPDATE messages SET content='', history_deleted=1, delivery_pruned=1, history_deleted_at=?3 WHERE id=?1 AND storage_owner=?2 AND history_deleted=0 AND NOT EXISTS(SELECT 1 FROM sync_events WHERE user_id=?2 AND entity_type='message' AND entity_id=?1 AND version>?4)",
+        params![message, owner, sync::now_millis(), through],
+    )?;
+    if changed == 0 {
+        return Ok(());
+    }
+    tx.execute("DELETE FROM message_edits WHERE message_id=?1", [message])?;
+    // Server retention must not erase the saved client copy or suppress later metadata updates.
+    // Explicit deletion and expiry still emit their own deletion events.
+    Ok(())
 }

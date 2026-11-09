@@ -13,8 +13,8 @@ use std::time::Duration;
 use crate::storage_error::StorageError;
 
 const DB_NAME: &str = "messages";
-// "ITO1" identifies the initial storage layout, not an upgrade sequence.
-const STORAGE_FORMAT: i64 = 0x49544F31;
+// "ITO2" identifies the supported storage layout. Older stores require a fresh database, not an upgrade.
+const STORAGE_FORMAT: i64 = 0x49544F32;
 
 /// A simple r2d2 manager for rusqlite connections.
 pub struct SqliteManager {

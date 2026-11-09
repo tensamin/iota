@@ -220,6 +220,35 @@ pub fn get_messages_for_principal(
     })
 }
 
+pub enum CurrentMessage {
+    Available(Box<StoredMessage>),
+    Pruned,
+}
+
+/// Read exact current state at one database boundary, including delivery-only pruning.
+pub fn get_message_by_relay(
+    storage_owner: i64,
+    signer: iota_identity::PrincipalHandle,
+    relay_id: &str,
+) -> Result<Option<CurrentMessage>, StorageError> {
+    db::with_db(|conn| {
+        let _transaction = conn.unchecked_transaction()?;
+        let state: Option<(i64, bool, bool)> = conn.query_row(
+            "SELECT id,history_deleted,delivery_pruned FROM messages WHERE storage_owner=?1 AND relay_signer_principal=?2 AND relay_message_id=?3 AND deleted_by_external=0",
+            params![storage_owner, signer.0, relay_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional()?;
+        match state {
+            Some((_, true, true)) => Ok(Some(CurrentMessage::Pruned)),
+            Some((id, false, _)) => Ok(get_messages_by_ids_on(conn, storage_owner, &[id])?
+                .into_iter()
+                .next()
+                .map(|message| CurrentMessage::Available(Box::new(message)))),
+            _ => Ok(None),
+        }
+    })
+}
+
 pub fn get_message(
     storage_owner: i64,
     message_time: i64,
@@ -364,53 +393,58 @@ pub fn get_messages_by_ids(
     storage_owner: i64,
     ids: &[i64],
 ) -> Result<Vec<StoredMessage>, StorageError> {
+    db::with_db(|conn| get_messages_by_ids_on(conn, storage_owner, ids))
+}
+
+fn get_messages_by_ids_on(
+    conn: &rusqlite::Connection,
+    storage_owner: i64,
+    ids: &[i64],
+) -> Result<Vec<StoredMessage>, StorageError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
     let ids = serde_json::to_string(ids).map_err(|error| StorageError::Other(error.to_string()))?;
-    db::with_db(|conn| {
-        let mut stmt = conn.prepare("SELECT id, relay_signer_id, relay_message_id, message_time, authored_at, origin_iota_received_at, destination_iota_received_at, client_received_at, client_received_recorded_at, read_at, read_recorded_at, delivery_failed_at, delivery_failure, content, sent_by_self, message_state, height, key_version, reply_to, edited_count, external_user, external_principal, relay_signer_principal FROM messages WHERE storage_owner = ?1 AND id IN (SELECT value FROM json_each(?2)) AND deleted_by_external = 0 AND history_deleted = 0 ORDER BY id ASC")?;
-        let rows = stmt.query_map(params![storage_owner, ids], |row| {
-            let external_user: i64 = row.get(20)?;
-            Ok(StoredMessage {
-                id: row.get(0)?,
-                external_user,
-                external_principal: row
-                    .get::<_, Option<i64>>(21)?
-                    .map(iota_identity::PrincipalHandle),
-                relay_signer_id: row.get(1)?,
-                relay_signer_principal: row
-                    .get::<_, Option<i64>>(22)?
-                    .map(iota_identity::PrincipalHandle),
-                relay_message_id: row.get(2)?,
-                message_time: row.get(3)?,
-                authored_at: row.get(4)?,
-                origin_iota_received_at: row.get(5)?,
-                destination_iota_received_at: row.get(6)?,
-                client_received_at: row.get(7)?,
-                client_received_recorded_at: row.get(8)?,
-                read_at: row.get(9)?,
-                read_recorded_at: row.get(10)?,
-                delivery_failed_at: row.get(11)?,
-                delivery_failure: row.get(12)?,
-                content: row.get(13)?,
-                sent_by_self: row.get::<_, i64>(14)? != 0,
-                message_state: row.get(15)?,
-                height: row.get(16)?,
-                key_version: row.get(17)?,
-                reply_to: row.get(18)?,
-                edited: row.get::<_, i64>(19)? > 0,
-                reactions: Vec::new(),
-            })
-        })?;
-        let mut messages = rows.collect::<Result<Vec<_>, _>>()?;
-        let reaction_map =
-            load_reactions(conn, &messages.iter().map(|m| m.id).collect::<Vec<_>>())?;
-        for message in &mut messages {
-            message.reactions = reaction_map.get(&message.id).cloned().unwrap_or_default();
-        }
-        Ok(messages)
-    })
+    let mut stmt = conn.prepare("SELECT id, relay_signer_id, relay_message_id, message_time, authored_at, origin_iota_received_at, destination_iota_received_at, client_received_at, client_received_recorded_at, read_at, read_recorded_at, delivery_failed_at, delivery_failure, content, sent_by_self, message_state, height, key_version, reply_to, edited_count, external_user, external_principal, relay_signer_principal FROM messages WHERE storage_owner = ?1 AND id IN (SELECT value FROM json_each(?2)) AND deleted_by_external = 0 AND history_deleted = 0 ORDER BY id ASC")?;
+    let rows = stmt.query_map(params![storage_owner, ids], |row| {
+        let external_user: i64 = row.get(20)?;
+        Ok(StoredMessage {
+            id: row.get(0)?,
+            external_user,
+            external_principal: row
+                .get::<_, Option<i64>>(21)?
+                .map(iota_identity::PrincipalHandle),
+            relay_signer_id: row.get(1)?,
+            relay_signer_principal: row
+                .get::<_, Option<i64>>(22)?
+                .map(iota_identity::PrincipalHandle),
+            relay_message_id: row.get(2)?,
+            message_time: row.get(3)?,
+            authored_at: row.get(4)?,
+            origin_iota_received_at: row.get(5)?,
+            destination_iota_received_at: row.get(6)?,
+            client_received_at: row.get(7)?,
+            client_received_recorded_at: row.get(8)?,
+            read_at: row.get(9)?,
+            read_recorded_at: row.get(10)?,
+            delivery_failed_at: row.get(11)?,
+            delivery_failure: row.get(12)?,
+            content: row.get(13)?,
+            sent_by_self: row.get::<_, i64>(14)? != 0,
+            message_state: row.get(15)?,
+            height: row.get(16)?,
+            key_version: row.get(17)?,
+            reply_to: row.get(18)?,
+            edited: row.get::<_, i64>(19)? > 0,
+            reactions: Vec::new(),
+        })
+    })?;
+    let mut messages = rows.collect::<Result<Vec<_>, _>>()?;
+    let reaction_map = load_reactions(conn, &messages.iter().map(|m| m.id).collect::<Vec<_>>())?;
+    for message in &mut messages {
+        message.reactions = reaction_map.get(&message.id).cloned().unwrap_or_default();
+    }
+    Ok(messages)
 }
 
 pub fn get_all_messages(storage_owner: i64) -> Result<Vec<StoredMessage>, StorageError> {

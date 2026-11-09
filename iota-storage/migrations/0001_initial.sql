@@ -372,7 +372,8 @@ CREATE TABLE IF NOT EXISTS messages (
                 message_time INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 sent_by_self INTEGER NOT NULL,
-                message_state TEXT NOT NULL
+                message_state TEXT NOT NULL,
+                delivery_pruned INTEGER NOT NULL DEFAULT 0 CHECK (delivery_pruned IN (0, 1))
             , height INTEGER NOT NULL DEFAULT 0, reply_to INTEGER, edited_count INTEGER NOT NULL DEFAULT 0, deleted_by_external INTEGER NOT NULL DEFAULT 0, key_version INTEGER NOT NULL DEFAULT 1, relay_signer_id INTEGER, relay_message_id TEXT, authored_at INTEGER, origin_iota_received_at INTEGER, destination_iota_received_at INTEGER, client_received_at INTEGER, client_received_recorded_at INTEGER, read_at INTEGER, read_recorded_at INTEGER, delivery_failed_at INTEGER, delivery_failure TEXT, stored_at INTEGER, expires_at INTEGER, history_deleted INTEGER NOT NULL DEFAULT 0 CHECK (history_deleted IN (0, 1)), history_deleted_at INTEGER, external_principal INTEGER REFERENCES principals(principal_pk), relay_signer_principal INTEGER REFERENCES principals(principal_pk));
 
 CREATE TABLE IF NOT EXISTS node_directory (

@@ -1,4 +1,5 @@
 use super::*;
+use iota_identity::PrincipalStore;
 
 pub fn handle_message_edit(cv: &CommunicationValue) -> CommunicationValue {
     let mutation = match message_mutation(cv) {
@@ -296,26 +297,71 @@ pub fn handle_messages_get(cv: &CommunicationValue) -> CommunicationValue {
 }
 
 pub fn handle_message_get(cv: &CommunicationValue) -> CommunicationValue {
-    let Some(send_time) = data_i64(cv, DataType::SendTime) else {
-        return error_response(cv, CommunicationType::ErrorInvalidData);
-    };
     let partner_id = data_i64(cv, DataType::ChatPartnerId);
     let owner = match required_sender_id(cv) {
         Ok(owner) => owner,
         Err(response) => return response,
     };
 
-    let (message, offset) = match partner_id {
-        Some(partner_id) => match message_with_alias_offset(owner, partner_id, send_time) {
-            Ok(Some((message, offset))) => (message, Some(offset)),
+    let exact = cv
+        .get_str(DataType::RelayMessageId)
+        .zip(cv.get_str(DataType::Principal));
+    let (message, offset) = if let Some((relay_id, principal)) = exact {
+        if relay_id.is_empty()
+            || relay_id.len() > 128
+            || cv.get_data(DataType::SendTime).is_some()
+            || partner_id.is_some()
+        {
+            return error_response(cv, CommunicationType::ErrorInvalidData);
+        }
+        let Ok(principal) = serde_json::from_str::<iota_identity::PrincipalId>(principal) else {
+            return error_response(cv, CommunicationType::ErrorInvalidData);
+        };
+        let handle =
+            match iota_storage::identity::SqlitePrincipalStore.get_by_canonical_id(&principal) {
+                Ok(Some(resolved)) => resolved.handle,
+                Ok(None) => return error_response(cv, CommunicationType::ErrorNotFound),
+                Err(error) => return internal_handler_error(cv, "message.author", error),
+            };
+        match chat_files::get_message_by_relay(owner, handle, relay_id) {
+            Ok(Some(chat_files::CurrentMessage::Available(message))) => (*message, None),
+            Ok(Some(chat_files::CurrentMessage::Pruned)) => {
+                return CommunicationValue::new(CommunicationType::MessageGet)
+                    .with_request_id(cv)
+                    .with_receiver(owner as u64)
+                    .add_typed_default(DataType::Status, DataValue::Str("pruned".into()))
+                    .add_typed_default(
+                        DataType::Principal,
+                        DataValue::Str(
+                            serde_json::to_string(&principal).expect("validated principal"),
+                        ),
+                    )
+                    .add_typed_default(DataType::RelayMessageId, DataValue::Str(relay_id.into()));
+            }
             Ok(None) => return error_response(cv, CommunicationType::ErrorNotFound),
-            Err(error) => return internal_handler_error(cv, "message.get", error),
-        },
-        None => match chat_files::get_message(owner, send_time, None, None) {
-            Ok(Some(message)) => (message, None),
-            Ok(None) => return error_response(cv, CommunicationType::ErrorNotFound),
-            Err(error) => return internal_handler_error(cv, "message.get", error),
-        },
+            Err(error) => return internal_handler_error(cv, "message.exact", error),
+        }
+    } else {
+        if cv.get_data(DataType::RelayMessageId).is_some()
+            || cv.get_data(DataType::Principal).is_some()
+        {
+            return error_response(cv, CommunicationType::ErrorInvalidData);
+        }
+        let Some(send_time) = data_i64(cv, DataType::SendTime) else {
+            return error_response(cv, CommunicationType::ErrorInvalidData);
+        };
+        match partner_id {
+            Some(partner_id) => match message_with_alias_offset(owner, partner_id, send_time) {
+                Ok(Some((message, offset))) => (message, Some(offset)),
+                Ok(None) => return error_response(cv, CommunicationType::ErrorNotFound),
+                Err(error) => return internal_handler_error(cv, "message.get", error),
+            },
+            None => match chat_files::get_message(owner, send_time, None, None) {
+                Ok(Some(message)) => (message, None),
+                Ok(None) => return error_response(cv, CommunicationType::ErrorNotFound),
+                Err(error) => return internal_handler_error(cv, "message.get", error),
+            },
+        }
     };
 
     let mut response = CommunicationValue::new(CommunicationType::MessageGet)
