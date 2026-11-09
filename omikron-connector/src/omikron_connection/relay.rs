@@ -350,6 +350,11 @@ impl OmikronConnection {
                 let _ = relay_queue::quarantine_claimed(&dispatch.0, "noncanonical_frame");
                 continue;
             }
+            let Some(signer) = record.signer_principal
+                .and_then(|handle| iota_storage::identity::SqlitePrincipalStore.get_principal(handle).ok().flatten())
+                .map(|resolved| resolved.principal) else {
+                continue;
+            };
             // Do not let an external callback continue sending after the lease
             // expires. The acknowledgement transaction independently checks it.
             let remaining = dispatch.0.claim.deadline.saturating_sub(now_millis_i64());
@@ -368,8 +373,13 @@ impl OmikronConnection {
                     Ok(response) if response.type_map().is_some()
                         && response.id() == Some(record.frame_id)
                         && response.is_type(CommunicationType::Success)
+                        && response.get_str(DataType::Status) == Some("notification")
+                        && response.get_str(DataType::Principal)
+                            .and_then(|value| serde_json::from_str::<iota_identity::PrincipalId>(value).ok())
+                            .as_ref() == Some(&signer)
                         && response.get_data(DataType::RelayMessageId).as_str() == record.relay_message_id.as_deref() => {
-                        if let Err(error) = client_relay_delivery::acknowledge_claimed_client_delivery(&dispatch.0) {
+                        let result = client_relay_delivery::acknowledge_claimed_client_delivery(&dispatch.0);
+                        if let Err(error) = result {
                             log!("Pending Relay {} acknowledgement failed: {error}", record.id);
                         }
                     }

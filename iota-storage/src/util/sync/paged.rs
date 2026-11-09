@@ -745,7 +745,9 @@ fn record(
     {
         fields.remove("content");
         fields.remove("blob");
-    } else if entity == "message" {
+    }
+    if entity == "message" && fields.get("deleted_by_external").and_then(Value::as_str) != Some("1")
+    {
         let mut statement = connection.prepare("SELECT r.reaction,p.authority_id,p.remote_user_id FROM reactions r LEFT JOIN principals p ON p.principal_pk=r.user_principal WHERE r.message_id=?1 ORDER BY r.id LIMIT 1025")?;
         let mut reactions = Vec::new();
         let mut rows = statement.query([row.get::<_, i64>(0)?])?;
@@ -776,7 +778,7 @@ fn record(
 fn columns(entity: &str) -> &'static str {
     match entity {
         "message" => {
-            "id,external_principal,relay_signer_principal,relay_message_id,message_time,authored_at,content,sent_by_self,message_state,height,key_version,reply_to,edited_count,deleted_by_external,history_deleted"
+            "id,external_principal,relay_signer_principal,relay_message_id,message_time,authored_at,content,sent_by_self,message_state,height,key_version,reply_to,edited_count,deleted_by_external,history_deleted,delivery_pruned"
         }
         "contact" => {
             "id,principal_handle,user_name,created_at,last_message_at,notifications,notifications_read_at"
@@ -812,6 +814,52 @@ fn acknowledge(
     // Existing retention workers use the same checkpoint. Neither page issuance
     // nor notification dispatch updates it.
     tx.execute("INSERT INTO client_device_sync_state(user_id,device_id,acknowledged_version,cache_schema_version,updated_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(user_id,device_id) DO UPDATE SET acknowledged_version=MAX(acknowledged_version,excluded.acknowledged_version),cache_schema_version=excluded.cache_schema_version,updated_at=excluded.updated_at", params![owner,cursor.scope.device_id,cursor.sequence,CACHE_SCHEMA_VERSION,now_millis()])?;
+    if super::super::message_storage_policy::get_in_tx(tx, owner)?.history_mode
+        == super::super::message_storage_policy::MessageHistoryMode::DeleteAfterClientDelivery
+    {
+        let kind: String = tx.query_row(
+            "SELECT kind FROM account_sync_pages WHERE id=?1",
+            [page_id],
+            |row| row.get(0),
+        )?;
+        let mut statement = tx.prepare(
+            "SELECT payload FROM account_sync_page_items WHERE page_id=?1 ORDER BY position",
+        )?;
+        let mut rows = statement.query([page_id])?;
+        while let Some(row) = rows.next()? {
+            let bytes: Vec<u8> = row.get(0)?;
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|error| StorageError::Other(error.to_string()))?;
+            let value = if kind == "snapshot" {
+                value
+            } else {
+                value.get("record").cloned().unwrap_or(Value::Null)
+            };
+            if value.is_null() {
+                continue;
+            }
+            let record: Record = serde_json::from_value(value)
+                .map_err(|error| StorageError::Other(error.to_string()))?;
+            if record.entity == Entity::Message
+                && record
+                    .value
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some()
+            {
+                let id = record
+                    .key
+                    .parse::<i64>()
+                    .map_err(|_| protocol_error(SyncError::InvalidRequest))?;
+                super::super::client_message_delivery::prune_after_sync_in_tx(
+                    tx,
+                    owner,
+                    id,
+                    cursor.sequence,
+                )?;
+            }
+        }
+    }
     super::super::relay_work::fault_point("after_sync_acknowledgment", page_id);
     Ok(Response::Acknowledged {
         cursor: cursor.clone(),

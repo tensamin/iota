@@ -114,9 +114,9 @@ pub fn record_message_receipt_in_tx(
         MessageState::Read => "read",
         _ => return Err(StorageError::Other("invalid message receipt state".into())),
     };
-    let Some((message_id, message_time, external_principal, authored_at, history_deleted)) = tx
+    let Some((message_id, message_time, external_principal, authored_at, unavailable)) = tx
             .query_row(
-                "SELECT id, message_time, external_principal, authored_at, history_deleted FROM messages WHERE storage_owner = ?1 AND relay_signer_principal = ?2 AND relay_message_id = ?3",
+                 "SELECT id, message_time, external_principal, authored_at, (history_deleted != 0 AND delivery_pruned = 0) OR deleted_by_external != 0 FROM messages WHERE storage_owner = ?1 AND relay_signer_principal = ?2 AND relay_message_id = ?3",
                 params![storage_owner, target_signer_principal.0, target_message_id],
                 |row| {
                     Ok((
@@ -124,7 +124,7 @@ pub fn record_message_receipt_in_tx(
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, Option<i64>>(3)?,
-                        row.get::<_, i64>(4)?,
+                        row.get::<_, bool>(4)?,
                     ))
                 },
             )
@@ -142,7 +142,7 @@ pub fn record_message_receipt_in_tx(
             "receipt event time outside accepted clock range",
         ));
     }
-    if history_deleted != 0 {
+    if unavailable {
         return Ok(None);
     }
     tx.execute(

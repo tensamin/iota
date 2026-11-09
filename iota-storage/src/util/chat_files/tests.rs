@@ -7,7 +7,7 @@ fn edit_fixture(conn: &Connection) -> Result<(), StorageError> {
             "CREATE TABLE messages (id INTEGER PRIMARY KEY, storage_owner INTEGER,
                 external_user INTEGER, external_principal INTEGER, message_time INTEGER,
                 content TEXT, sent_by_self INTEGER, history_deleted INTEGER DEFAULT 0,
-                edited_count INTEGER DEFAULT 0, key_version INTEGER);
+                edited_count INTEGER DEFAULT 0, key_version INTEGER, delivery_pruned INTEGER DEFAULT 0, history_deleted_at INTEGER);
              CREATE TABLE message_edits (message_id INTEGER, content_before TEXT,
                  content_after TEXT, edited_at INTEGER, edited_by INTEGER,
                  content_before_key_version INTEGER, content_after_key_version INTEGER);

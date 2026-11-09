@@ -1,6 +1,7 @@
 use super::*;
 use async_trait::async_trait;
 use iota_connection::relay_service::{RelayNodeIdentity, RelayService};
+use iota_identity::PrincipalStore as _;
 use iota_identity::{
     IdentityError, IdentityResolver, IotaNodeId, LocalNodeIdentity, PrincipalHandle, PrincipalId,
     ResolutionContext, ResolvedPrincipal, UserAddress,
@@ -684,6 +685,36 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
                     CommunicationType::Success,
                     frame.type_map().unwrap(),
                 )
+                .add_typed_default(
+                    DataType::Status,
+                    DataValue::Str(
+                        if callback == 3 {
+                            "stored"
+                        } else {
+                            "notification"
+                        }
+                        .into(),
+                    ),
+                )
+                .add_typed_default(
+                    DataType::Principal,
+                    DataValue::Str(if callback == 4 {
+                        "not-json".into()
+                    } else {
+                        serde_json::to_string_pretty(
+                            &iota_storage::identity::SqlitePrincipalStore
+                                .get_principal(if callback == 2 {
+                                    pending.destination_principal.unwrap()
+                                } else {
+                                    pending.signer_principal.unwrap()
+                                })
+                                .unwrap()
+                                .unwrap()
+                                .principal,
+                        )
+                        .unwrap()
+                    }),
+                )
                 .with_id(if callback == 0 {
                     pending.frame_id.wrapping_add(1)
                 } else {
@@ -701,7 +732,7 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
             }
         })
         .unwrap();
-    for _ in 0..2 {
+    for _ in 0..5 {
         delivery.flush_pending_relays().await;
         assert!(relay_queue::list_active(100).unwrap().contains(&pending));
         assert_eq!(
@@ -718,7 +749,7 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
         );
     }
     delivery.flush_pending_relays().await;
-    assert_eq!(callbacks.load(Ordering::Acquire), 3);
+    assert_eq!(callbacks.load(Ordering::Acquire), 6);
     assert!(relay_queue::list_active(100).unwrap().is_empty());
     assert_eq!(
         relay_support::count(
@@ -728,7 +759,7 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
     );
     assert_eq!(
         relay_support::count(
-            "SELECT COUNT(*) FROM messages WHERE storage_owner = 2 AND relay_message_id = 'committed-before-blocked-local-sink' AND history_deleted = 1 AND content = ''"
+            "SELECT COUNT(*) FROM messages WHERE storage_owner = 2 AND relay_message_id = 'committed-before-blocked-local-sink' AND history_deleted = 0 AND content = 'ciphertext'"
         ),
         1
     );
@@ -739,7 +770,7 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
         1
     );
     delivery.flush_pending_relays().await;
-    assert_eq!(callbacks.load(Ordering::Acquire), 3);
+    assert_eq!(callbacks.load(Ordering::Acquire), 6);
 }
 
 #[tokio::test]

@@ -1,7 +1,6 @@
-/* Commits client delivery, relay state, and retention cleanup as one operation. */
+/* Transport receipt retires delivery. Only durable account-sync acknowledgement owns retention. */
 use crate::storage_error::StorageError;
-use crate::util::{chat_files, db, message_storage_policy, relay_queue, relay_replay};
-use rusqlite::OptionalExtension;
+use crate::util::{db, relay_queue, relay_replay};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientRelayDeliveryResult {
@@ -50,7 +49,7 @@ pub fn acknowledge_claimed_client_delivery_in_tx(
     if relay.legacy_recipient_id != Some(destination) {
         return Err(StorageError::PendingRelayConflict);
     }
-    complete_effects_in_tx(tx, destination, &relay)?;
+    relay_replay::mark_delivered_in_tx(tx, relay.signer, &relay.message_id)?;
     tx.execute("DELETE FROM pending_relays WHERE id = ?1 AND dispatch_generation = ?2 AND dispatch_owner = ?3", rusqlite::params![pending.id, claimed.claim.generation, claimed.claim.owner])?;
     Ok(ClientRelayDeliveryResult::Acknowledged)
 }
@@ -88,7 +87,7 @@ pub fn acknowledge_pending_client_delivery_in_tx(
     if relay.legacy_recipient_id != Some(destination) {
         return Err(StorageError::PendingRelayConflict);
     }
-    complete_in_tx(tx, destination, pending.id, &relay)
+    complete_in_tx(tx, pending.id, &relay)
 }
 
 #[cfg(test)]
@@ -102,12 +101,11 @@ pub(crate) fn acknowledge_client_delivery_in_tx(
     else {
         return Ok(ClientRelayDeliveryResult::NotFound);
     };
-    complete_in_tx(tx, destination_id, pending_id, &relay)
+    complete_in_tx(tx, pending_id, &relay)
 }
 
 fn complete_in_tx(
     tx: &rusqlite::Transaction<'_>,
-    destination_id: i64,
     pending_id: i64,
     relay: &relay_queue::RelayIdentity,
 ) -> Result<ClientRelayDeliveryResult, StorageError> {
@@ -119,28 +117,7 @@ fn complete_in_tx(
     if !unclaimed {
         return Ok(ClientRelayDeliveryResult::NotFound);
     }
-    complete_effects_in_tx(tx, destination_id, relay)?;
+    relay_replay::mark_delivered_in_tx(tx, relay.signer, &relay.message_id)?;
     relay_queue::acknowledge_in_tx(tx, pending_id)?;
     Ok(ClientRelayDeliveryResult::Acknowledged)
-}
-
-fn complete_effects_in_tx(
-    tx: &rusqlite::Transaction<'_>,
-    destination_id: i64,
-    relay: &relay_queue::RelayIdentity,
-) -> Result<(), StorageError> {
-    let policy = message_storage_policy::get_in_tx(tx, destination_id)?;
-    relay_replay::mark_delivered_in_tx(tx, relay.signer, &relay.message_id)?;
-    if policy.history_mode == message_storage_policy::MessageHistoryMode::DeleteAfterClientDelivery
-    {
-        let message_id = tx.query_row(
-                "SELECT id FROM messages WHERE storage_owner = ?1 AND relay_signer_principal = ?2 AND relay_message_id = ?3",
-                rusqlite::params![destination_id, relay.signer.0, relay.message_id],
-                |row| row.get::<_, i64>(0),
-            ).optional()?;
-        if let Some(message_id) = message_id {
-            chat_files::remove_message_history_in_tx(tx, destination_id, message_id)?;
-        }
-    }
-    Ok(())
 }

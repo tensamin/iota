@@ -265,7 +265,7 @@ pub(super) fn update_message_content_in_tx(
     let msg = tx
         .query_row(
             r#"
-            SELECT id, content, sent_by_self, history_deleted, key_version
+            SELECT id, content, sent_by_self, history_deleted, key_version, delivery_pruned
             FROM messages
             WHERE storage_owner = ?1
               AND message_time = ?3
@@ -288,13 +288,15 @@ pub(super) fn update_message_content_in_tx(
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
                 ))
             },
         )
         .optional()?
         .ok_or(StorageError::MissingRelayDependency)?;
 
-    let (msg_id, old_content, sent_by_self, history_deleted, old_key_version) = msg;
+    let (msg_id, old_content, sent_by_self, history_deleted, old_key_version, delivery_pruned) =
+        msg;
     if require_sent_by_self && sent_by_self != 1 {
         return Err(StorageError::MessageUnauthorized);
     }
@@ -302,7 +304,7 @@ pub(super) fn update_message_content_in_tx(
         return Err(StorageError::MessageUnauthorized);
     }
 
-    if history_deleted != 0 {
+    if history_deleted != 0 && delivery_pruned == 0 {
         return Ok(());
     }
     let now = std::time::SystemTime::now()
@@ -322,7 +324,7 @@ pub(super) fn update_message_content_in_tx(
         r#"
             UPDATE messages
             SET content = ?1, edited_count = edited_count + 1,
-                key_version = COALESCE(?3, key_version)
+                key_version = COALESCE(?3, key_version), history_deleted=0, delivery_pruned=0, history_deleted_at=NULL
             WHERE id = ?2
             "#,
         params![new_content, msg_id, key_version],

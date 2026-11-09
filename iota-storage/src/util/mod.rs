@@ -13,7 +13,6 @@ pub mod e2ee_storage;
 pub mod files;
 pub mod message_retention;
 pub mod message_storage_policy;
-pub mod outgoing_relay;
 pub mod protected_replay;
 pub mod receipt_policy;
 pub mod relay_acceptance_receipts;

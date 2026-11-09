@@ -96,7 +96,11 @@ fn client_acknowledgement_uses_canonical_identity_and_rejects_ambiguity() -> Res
         )?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
-    assert_eq!(history, vec![("first".into(), 1), ("second".into(), 0)]);
+    assert_eq!(
+        history,
+        vec![("first".into(), 0), ("second".into(), 0)],
+        "Transport receipt does not prove durable application storage"
+    );
     assert_eq!(
         tx.query_row("SELECT count(*) FROM pending_relays", [], |row| row
             .get::<_, i64>(0))?,

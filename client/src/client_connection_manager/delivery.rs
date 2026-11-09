@@ -25,12 +25,6 @@ impl ClientConnectionManager {
             {
                 return;
             }
-            if !active
-                .state_applied
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                continue;
-            }
             if let Err(error) = iota_storage::util::relay_queue::resume_client_deliveries(
                 lease.identity.local_user.0,
             ) {
@@ -195,6 +189,7 @@ pub(super) fn local_delivery_ack_matches(
     signer: &iota_identity::PrincipalId,
 ) -> bool {
     response.is_type(CommunicationType::Success)
+        && response.get_str(DataType::Status) == Some("notification")
         && response.get_data(DataType::RelayMessageId).as_str() == Some(message_id)
         && response
             .get_data(DataType::Principal)

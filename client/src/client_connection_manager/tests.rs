@@ -48,6 +48,7 @@ async fn local_delivery_acknowledgements_bind_identity_and_connection() {
         );
         assert_ne!(new_wire.id(), frame.id());
         let response = CommunicationValue::new(CommunicationType::Success)
+            .add_typed_default(DataType::Status, DataValue::Str("notification".into()))
             .with_id(old_wire.id().unwrap())
             .add_typed_default(
                 DataType::RelayMessageId,

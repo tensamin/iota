@@ -65,70 +65,6 @@ pub fn purge_message(storage_owner: i64, message_id: i64) -> Result<(), StorageE
     db::with_immediate_transaction(|tx| purge_message_in_tx(tx, storage_owner, message_id))
 }
 
-pub fn remove_message_history(storage_owner: i64, message_id: i64) -> Result<(), StorageError> {
-    db::with_immediate_transaction(|tx| remove_message_history_in_tx(tx, storage_owner, message_id))
-}
-
-/* Resolves the protocol identity retained in a tombstone before removing visible history. */
-pub fn remove_message_history_by_relay_identity(
-    storage_owner: i64,
-    relay_signer_id: i64,
-    relay_message_id: &str,
-) -> Result<(), StorageError> {
-    db::with_immediate_transaction(|tx| {
-        let message_id = tx.query_row(
-            "SELECT id FROM messages WHERE storage_owner = ?1 AND relay_signer_id = ?2 AND relay_message_id = ?3",
-            params![storage_owner, relay_signer_id, relay_message_id],
-            |row| row.get::<_, i64>(0),
-        ).optional()?;
-        if let Some(message_id) = message_id {
-            remove_message_history_in_tx(tx, storage_owner, message_id)?;
-        }
-        Ok(())
-    })
-}
-
-pub fn remove_message_history_in_tx(
-    tx: &Transaction<'_>,
-    storage_owner: i64,
-    message_id: i64,
-) -> Result<(), StorageError> {
-    let message: Option<(i64, Option<i64>, i64)> = tx
-        .query_row(
-            "SELECT external_user, external_principal, history_deleted FROM messages WHERE id = ?1 AND storage_owner = ?2",
-            params![message_id, storage_owner],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?;
-    let Some((external_user, external_principal, history_deleted)) = message else {
-        return Ok(());
-    };
-    if history_deleted != 0 {
-        return Ok(());
-    }
-    tx.execute(
-        "DELETE FROM message_edits WHERE message_id = ?1",
-        [message_id],
-    )?;
-    tx.execute("DELETE FROM reactions WHERE message_id = ?1", [message_id])?;
-    tx.execute("DELETE FROM message_receipts WHERE storage_owner = ?1 AND EXISTS (SELECT 1 FROM messages WHERE id = ?2 AND relay_signer_principal = message_receipts.target_signer_principal AND relay_message_id = message_receipts.target_message_id)", params![storage_owner, message_id])?;
-    tx.execute("UPDATE messages SET content = '', history_deleted = 1, history_deleted_at = ?2, expires_at = NULL, client_received_at = NULL, client_received_recorded_at = NULL, read_at = NULL, read_recorded_at = NULL WHERE id = ?1", params![message_id, sync::now_millis()])?;
-    sync::record_event(
-        tx,
-        storage_owner,
-        EntityType::Message,
-        message_id,
-        Operation::Delete,
-    )?;
-    update_contact_last_message_in_tx(
-        tx,
-        storage_owner,
-        external_user,
-        external_principal.map(iota_identity::PrincipalHandle),
-    )?;
-    Ok(())
-}
-
 pub(super) fn update_contact_last_message_in_tx(
     tx: &Transaction<'_>,
     storage_owner: i64,
@@ -136,7 +72,7 @@ pub(super) fn update_contact_last_message_in_tx(
     external_principal: Option<iota_identity::PrincipalHandle>,
 ) -> Result<(), StorageError> {
     tx.execute(
-        "UPDATE contacts SET last_message_at = (SELECT MAX(COALESCE(destination_iota_received_at, origin_iota_received_at, authored_at, message_time)) FROM messages WHERE storage_owner = ?1 AND ((?3 IS NULL AND external_user = ?2) OR external_principal = ?3) AND deleted_by_external = 0 AND history_deleted = 0) WHERE storage_owner = ?1 AND ((?3 IS NULL AND user_id = ?2) OR principal_handle = ?3)",
+        "UPDATE contacts SET last_message_at = (SELECT MAX(COALESCE(destination_iota_received_at, origin_iota_received_at, authored_at, message_time)) FROM messages WHERE storage_owner = ?1 AND ((?3 IS NULL AND external_user = ?2) OR external_principal = ?3) AND deleted_by_external = 0 AND (history_deleted = 0 OR delivery_pruned = 1)) WHERE storage_owner = ?1 AND ((?3 IS NULL AND user_id = ?2) OR principal_handle = ?3)",
         params![storage_owner, external_user, external_principal.map(|principal| principal.0)],
     )?;
     Ok(())
