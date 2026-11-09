@@ -352,7 +352,7 @@ impl OmikronConnection {
             }
             let Some(signer) = record.signer_principal
                 .and_then(|handle| iota_storage::identity::SqlitePrincipalStore.get_principal(handle).ok().flatten())
-                .and_then(|resolved| serde_json::to_string(&resolved.principal).ok()) else {
+                .map(|resolved| resolved.principal) else {
                 continue;
             };
             // Do not let an external callback continue sending after the lease
@@ -374,7 +374,9 @@ impl OmikronConnection {
                         && response.id() == Some(record.frame_id)
                         && response.is_type(CommunicationType::Success)
                         && response.get_str(DataType::Status) == Some("notification")
-                        && response.get_str(DataType::Principal) == Some(signer.as_str())
+                        && response.get_str(DataType::Principal)
+                            .and_then(|value| serde_json::from_str::<iota_identity::PrincipalId>(value).ok())
+                            .as_ref() == Some(&signer)
                         && response.get_data(DataType::RelayMessageId).as_str() == record.relay_message_id.as_deref() => {
                         let result = client_relay_delivery::acknowledge_claimed_client_delivery(&dispatch.0);
                         if let Err(error) = result {

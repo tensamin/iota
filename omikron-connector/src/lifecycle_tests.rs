@@ -698,8 +698,10 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
                 )
                 .add_typed_default(
                     DataType::Principal,
-                    DataValue::Str(
-                        serde_json::to_string(
+                    DataValue::Str(if callback == 4 {
+                        "not-json".into()
+                    } else {
+                        serde_json::to_string_pretty(
                             &iota_storage::identity::SqlitePrincipalStore
                                 .get_principal(if callback == 2 {
                                     pending.destination_principal.unwrap()
@@ -710,8 +712,8 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
                                 .unwrap()
                                 .principal,
                         )
-                        .unwrap(),
-                    ),
+                        .unwrap()
+                    }),
                 )
                 .with_id(if callback == 0 {
                     pending.frame_id.wrapping_add(1)
@@ -730,7 +732,7 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
             }
         })
         .unwrap();
-    for _ in 0..4 {
+    for _ in 0..5 {
         delivery.flush_pending_relays().await;
         assert!(relay_queue::list_active(100).unwrap().contains(&pending));
         assert_eq!(
@@ -747,7 +749,7 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
         );
     }
     delivery.flush_pending_relays().await;
-    assert_eq!(callbacks.load(Ordering::Acquire), 5);
+    assert_eq!(callbacks.load(Ordering::Acquire), 6);
     assert!(relay_queue::list_active(100).unwrap().is_empty());
     assert_eq!(
         relay_support::count(
@@ -768,7 +770,7 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
         1
     );
     delivery.flush_pending_relays().await;
-    assert_eq!(callbacks.load(Ordering::Acquire), 5);
+    assert_eq!(callbacks.load(Ordering::Acquire), 6);
 }
 
 #[tokio::test]

@@ -19,9 +19,9 @@ jobs:
       - name: Check delivery and storage formatting
         run: nix develop -c cargo fmt -p client -p iota-connection -p iota-storage --check
       - name: Check delivery and storage lints
-        run: nix develop -c cargo clippy -p client -p iota-connection -p iota-storage --locked --all-targets -- -D warnings
+        run: nix develop -c cargo clippy -p client -p iota-connection -p iota-storage --locked --all-targets --features iota-connection/relay-fault-injection -- -D warnings
       - name: Exercise real delivery, replay, retention and synchronization
-        run: nix develop -c cargo test -p client -p iota-connection -p iota-storage --locked
+        run: nix develop -c cargo test -p client -p iota-connection -p iota-storage --locked --features iota-connection/relay-fault-injection
   authentication:
     name: Validate authentication
     runs-on: host
