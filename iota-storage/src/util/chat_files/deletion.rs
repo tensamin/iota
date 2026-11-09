@@ -72,7 +72,7 @@ pub(super) fn update_contact_last_message_in_tx(
     external_principal: Option<iota_identity::PrincipalHandle>,
 ) -> Result<(), StorageError> {
     tx.execute(
-        "UPDATE contacts SET last_message_at = (SELECT MAX(COALESCE(destination_iota_received_at, origin_iota_received_at, authored_at, message_time)) FROM messages WHERE storage_owner = ?1 AND ((?3 IS NULL AND external_user = ?2) OR external_principal = ?3) AND deleted_by_external = 0 AND history_deleted = 0) WHERE storage_owner = ?1 AND ((?3 IS NULL AND user_id = ?2) OR principal_handle = ?3)",
+        "UPDATE contacts SET last_message_at = (SELECT MAX(COALESCE(destination_iota_received_at, origin_iota_received_at, authored_at, message_time)) FROM messages WHERE storage_owner = ?1 AND ((?3 IS NULL AND external_user = ?2) OR external_principal = ?3) AND deleted_by_external = 0 AND (history_deleted = 0 OR delivery_pruned = 1)) WHERE storage_owner = ?1 AND ((?3 IS NULL AND user_id = ?2) OR principal_handle = ?3)",
         params![storage_owner, external_user, external_principal.map(|principal| principal.0)],
     )?;
     Ok(())

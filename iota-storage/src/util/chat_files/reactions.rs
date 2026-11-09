@@ -101,10 +101,10 @@ pub(super) fn add_reaction_with_principal_in_tx(
     user_principal: Option<iota_identity::PrincipalHandle>,
     reaction: &str,
 ) -> Result<(), StorageError> {
-    let (msg_id, history_deleted): (i64, i64) = tx
+    let (msg_id, unavailable): (i64, bool) = tx
         .query_row(
             r#"
-            SELECT id, history_deleted FROM messages
+            SELECT id, (history_deleted != 0 AND delivery_pruned = 0) OR deleted_by_external != 0 FROM messages
             WHERE storage_owner = ?1
               AND message_time = ?3
               AND (
@@ -123,7 +123,7 @@ pub(super) fn add_reaction_with_principal_in_tx(
         )
         .optional()?
         .ok_or(StorageError::MissingRelayDependency)?;
-    if history_deleted != 0 {
+    if unavailable {
         return Ok(());
     }
 
@@ -276,10 +276,10 @@ pub(super) fn remove_reaction_with_principal_in_tx(
     user_principal: Option<iota_identity::PrincipalHandle>,
     reaction: &str,
 ) -> Result<(), StorageError> {
-    let (msg_id, history_deleted): (i64, i64) = tx
+    let (msg_id, unavailable): (i64, bool) = tx
         .query_row(
             r#"
-            SELECT id, history_deleted FROM messages
+            SELECT id, (history_deleted != 0 AND delivery_pruned = 0) OR deleted_by_external != 0 FROM messages
             WHERE storage_owner = ?1
               AND message_time = ?3
               AND (
@@ -298,7 +298,7 @@ pub(super) fn remove_reaction_with_principal_in_tx(
         )
         .optional()?
         .ok_or(StorageError::MissingRelayDependency)?;
-    if history_deleted != 0 {
+    if unavailable {
         return Ok(());
     }
 

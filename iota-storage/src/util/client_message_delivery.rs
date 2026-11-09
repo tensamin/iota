@@ -99,8 +99,10 @@ pub(crate) fn prune_after_sync_in_tx(
     message: i64,
     through: i64,
 ) -> Result<(), StorageError> {
+    // Compaction can remove newer-event evidence. The acknowledgement must cover
+    // the retained event floor before absence of newer events proves anything.
     let changed = tx.execute(
-        "UPDATE messages SET content='', history_deleted=1, delivery_pruned=1, history_deleted_at=?3 WHERE id=?1 AND storage_owner=?2 AND history_deleted=0 AND NOT EXISTS(SELECT 1 FROM sync_events WHERE user_id=?2 AND entity_type='message' AND entity_id=?1 AND version>?4)",
+        "UPDATE messages SET content='', history_deleted=1, delivery_pruned=1, history_deleted_at=?3 WHERE id=?1 AND storage_owner=?2 AND history_deleted=0 AND NOT EXISTS(SELECT 1 FROM account_sync_floors WHERE user_id=?2 AND sequence>?4) AND NOT EXISTS(SELECT 1 FROM sync_events WHERE user_id=?2 AND entity_type='message' AND entity_id=?1 AND version>?4)",
         params![message, owner, sync::now_millis(), through],
     )?;
     if changed == 0 {
