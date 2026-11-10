@@ -771,6 +771,111 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
     );
     delivery.flush_pending_relays().await;
     assert_eq!(callbacks.load(Ordering::Acquire), 6);
+
+    let transport = Loopback::new().await;
+    let connector = transport.connector().await;
+    transport.start_reader(&connector).await;
+    let application = relay_support::send(2);
+    let map = application.type_map().unwrap();
+    let route = iota_identity::relay_protocol::NativeRelayRoute {
+        signer: iota_connection::federated_relay::protocol_principal(&fixture.ids[0]),
+        recipient: iota_connection::federated_relay::protocol_principal(&fixture.ids[1]),
+        destination: fixture.node.node_id().as_str().into(),
+        type_map_version: map.version.to_string(),
+        type_map_fingerprint: map.fingerprint_hex().unwrap(),
+    };
+    let signing = mtp::crypto::Ed25519Signer::new(&fixture.keys[0].sig_cl_secret_key).unwrap();
+    let recipients = vec![
+        fixture.node.public_keys(),
+        fixture.keys[0].public_key_bundle(),
+        fixture.keys[1].public_key_bundle(),
+    ];
+    let frame = mtp::codec::relay::SealedRelayBuilder::new(
+        CommunicationType::MessageSend,
+        application.payload().clone(),
+        fixture.ids[0].user_id,
+        fixture.ids[1].user_id,
+        fixture.node.node_id().mtp_authentication_hint(),
+        &signing,
+    )
+    .type_map(map)
+    .message_id(1u128)
+    .created_at(iota_storage::util::sync::now_millis() as u64)
+    .metadata(route.to_metadata(map).unwrap())
+    .metadata_recipients(recipients.clone())
+    .content_recipients(recipients)
+    .build()
+    .unwrap()
+    .with_id(pending.frame_id);
+    let bytes = frame.to_bytes().unwrap();
+    let mut snapshot = pending.clone();
+    snapshot.relay_message_id = Some("mtp-sealed-v1:1".into());
+    snapshot.type_map_version = map.version.to_string();
+    let operation = tokio::spawn({
+        let connector = connector.clone();
+        let snapshot = snapshot.clone();
+        async move { connector.deliver_pending_relay(&snapshot, frame).await }
+    });
+    let outbound = timeout(NETWORK_BUDGET, transport.peer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        outbound.get_data(DataType::Status).as_str(),
+        Some("tensamin-hosted-delivery-v1")
+    );
+    assert_eq!(
+        outbound
+            .get_data(DataType::SecurePayload)
+            .and_then(DataValue::as_bytes_slice),
+        Some(bytes.as_slice())
+    );
+    let context: serde_json::Value = serde_json::from_slice(
+        outbound
+            .get_data(DataType::Json)
+            .and_then(DataValue::as_bytes_slice)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        context["recipient"],
+        serde_json::to_value(&fixture.ids[1]).unwrap()
+    );
+    assert_eq!(
+        context["signer"],
+        serde_json::to_value(&fixture.ids[0]).unwrap()
+    );
+    assert_eq!(
+        context["message_id"],
+        snapshot.relay_message_id.as_deref().unwrap()
+    );
+    let acknowledgement = CommunicationValue::new_with_type_map(
+        CommunicationType::Success,
+        outbound.type_map().unwrap(),
+    )
+    .with_id(outbound.id().unwrap())
+    .add_typed_default(DataType::Status, DataValue::Str("notification".into()))
+    .add_typed_default(
+        DataType::Principal,
+        DataValue::Str(serde_json::to_string(&fixture.ids[0]).unwrap()),
+    )
+    .add_typed_default(
+        DataType::RelayMessageId,
+        DataValue::Str(snapshot.relay_message_id.clone().unwrap()),
+    );
+    transport.peer.sender.send(&acknowledgement).await.unwrap();
+    let accepted = timeout(NETWORK_BUDGET, operation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(accepted.id(), Some(snapshot.frame_id));
+    assert!(accepted.is_type(CommunicationType::Success));
+    assert!(matches!(
+        connector.stop().await,
+        Ok(ShutdownOutcome::Complete)
+    ));
+    transport.close().await;
 }
 
 #[tokio::test]

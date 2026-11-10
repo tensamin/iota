@@ -270,6 +270,7 @@ fn parse_omega_invitation(
 }
 const MAX_CONCURRENT_HANDLERS: usize = 20;
 
+#[cfg(test)]
 type PendingDelivery = dyn Fn(
         relay_queue::PendingRelay,
         CommunicationValue,
@@ -545,6 +546,7 @@ pub struct OmikronConnection {
     relay_service: Arc<OnceLock<Arc<iota_connection::relay_service::RelayService>>>,
     identities: Arc<OnceLock<Arc<dyn iota_identity::IdentityResolver>>>,
     local_deliveries: Arc<OnceLock<Arc<dyn other_iota::LocalDeliverySink>>>,
+    #[cfg(test)]
     pending_deliveries: Arc<OnceLock<Arc<PendingDelivery>>>,
 }
 
@@ -595,6 +597,7 @@ impl OmikronConnection {
             relay_service: Arc::new(OnceLock::new()),
             identities: Arc::new(OnceLock::new()),
             local_deliveries: Arc::new(OnceLock::new()),
+            #[cfg(test)]
             pending_deliveries: Arc::new(OnceLock::new()),
         }
     }
@@ -624,8 +627,8 @@ impl OmikronConnection {
         self.local_deliveries.set(sink)
     }
 
-    /// The client manager owns per-connection correlation and flush exclusion.
-    /// Only a response to this exact queue snapshot can acknowledge delivery.
+    /// Replace the delivery transport in connector lifecycle tests.
+    #[cfg(test)]
     pub fn install_pending_delivery_sink<F, Fut>(&self, sink: F) -> Result<(), String>
     where
         F: Fn(relay_queue::PendingRelay, CommunicationValue) -> Fut + Send + Sync + 'static,

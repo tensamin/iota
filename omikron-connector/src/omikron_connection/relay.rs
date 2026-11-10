@@ -253,15 +253,69 @@ impl OmikronConnection {
 }
 
 impl OmikronConnection {
+    pub(super) async fn deliver_pending_relay(
+        &self,
+        record: &relay_queue::PendingRelay,
+        frame: CommunicationValue,
+    ) -> Result<CommunicationValue, String> {
+        #[cfg(test)]
+        if let Some(sink) = self.pending_deliveries.get() {
+            return sink(record.clone(), frame).await;
+        }
+
+        let resolve = |handle| {
+            iota_storage::identity::SqlitePrincipalStore
+                .get_principal(handle)
+                .map_err(|error| error.to_string())?
+                .map(|principal| principal.principal)
+                .ok_or_else(|| "delivery principal is unavailable".to_owned())
+        };
+        let recipient = resolve(
+            record
+                .destination_principal
+                .ok_or("missing delivery recipient")?,
+        )?;
+        let signer = resolve(record.signer_principal.ok_or("missing delivery signer")?)?;
+        let map = frame.type_map().ok_or("missing delivery dictionary")?;
+        let context = serde_json::to_vec(&serde_json::json!({
+            "recipient": recipient,
+            "signer": signer,
+            "message_id": record.relay_message_id.as_deref().ok_or("missing relay message ID")?,
+            "dictionary_version": record.type_map_version,
+        }))
+        .map_err(|error| error.to_string())?;
+        let request = CommunicationValue::new_with_type_map(CommunicationType::Relay, map)
+            .with_id(record.frame_id)
+            .add_typed_default(
+                DataType::Status,
+                DataValue::Str("tensamin-hosted-delivery-v1".into()),
+            )
+            .add_typed_default(DataType::Json, DataValue::Bytes(context))
+            .add_typed_default(
+                DataType::SecurePayload,
+                DataValue::Bytes(frame.to_bytes().map_err(|error| error.to_string())?),
+            );
+
+        let response = self
+            .await_response(&request, Some(Duration::from_secs(20)))
+            .await?;
+
+        if !response.is_type(CommunicationType::Success) {
+            return Err(format!(
+                "relay notification rejected: {:?}",
+                response.get_comm_type_enum()
+            ));
+        }
+
+        Ok(response)
+    }
+
     pub(super) async fn flush_pending_relays(&self) {
         self.flush_pending_relays_for_user(None).await;
     }
 
     pub(super) async fn flush_pending_relays_for_user(&self, destination_user_id: Option<i64>) {
         let cancellation = self.preparation_cancellation();
-        let Some(sink) = self.pending_deliveries.get() else {
-            return;
-        };
         let Ok(_flush) = self.relay_flush.try_lock() else {
             return;
         };
@@ -364,7 +418,7 @@ impl OmikronConnection {
                 let response = tokio::select! {
                     biased;
                     _ = cancellation.cancelled() => break,
-                    response = tokio::time::timeout(Duration::from_millis(remaining as u64), sink(record.clone(), frame.with_id(record.frame_id))) => match response {
+                    response = tokio::time::timeout(Duration::from_millis(remaining as u64), self.deliver_pending_relay(record, frame.with_id(record.frame_id))) => match response {
                         Ok(response) => response,
                         Err(_) => Err("client_delivery_timeout".into()),
                     },

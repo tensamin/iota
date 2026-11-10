@@ -104,28 +104,30 @@ fence also covers receipt pages before sending account data to a client.
 
 ## Canonical relay delivery
 
-The connector accepts only negotiated V2 relay frames and current queue records.
+The connector accepts signed relays using negotiated dictionaries and current queue records.
 It does not decode, backfill, or apply historical sealed relay content.
 
-Install the process relay service with `install_relay_service` and the client
-manager with `install_local_delivery_sink`. Install its correlated pending
-delivery callback with `install_pending_delivery_sink`. That callback receives
-the exact queue snapshot and frame, and owns per-client connection flush
-exclusion. Pending client delivery uses the record's stored type-map version,
-authenticated recipient principal, original V2 frame, and exact queued frame ID.
-Unsolicited successes and offline responses leave queued work intact. Only a correlated successful response with
-the same relay message ID acknowledges the exact snapshot through
-`acknowledge_claimed_client_delivery`. Unsolicited Omikron successes and offline
-responses cannot acknowledge or alter client queue records by numeric IDs.
-Missing sinks leave queued work intact.
+Install the process relay service with `install_relay_service`. Direct hosted
+connections can be notified through `install_local_delivery_sink`. The bound
+connector owns pending delivery through Omikron's `tensamin-hosted-delivery-v1`
+envelope. Its context identifies the recipient, signer, canonical relay message
+ID and stored dictionary version. The encrypted native frame remains opaque.
+`install_pending_delivery_sink` replaces this transport only in lifecycle tests.
+
+Omikron authorizes the recipient against the current Iota assignment and waits
+for an acknowledgement on that recipient's client connection. Each transport
+correlation ID is restored before returning upstream. Only `Status=notification`
+with the matching signer and canonical relay ID retires the claimed notification.
+Native relay IDs use `mtp-sealed-v1:<decimal u128>` in `RelayMessageId`.
+Unsolicited successes, stale routes and offline responses leave queued work intact.
 
 The connector lists recipient hints, then claims one due row with
 `claim_ready_for_user` using the authenticated local user and principal. A listed
-snapshot grants no network or mutation authority. Every callback receives the
+snapshot grants no network or mutation authority. The delivery transport uses the
 claimed snapshot. The acknowledgement transaction checks the immutable snapshot,
 `Ready` state and the current unexpired dispatch generation, owner and deadline
-before it completes relay delivery, applies retention policy and deletes the row.
-Callback waits end by the lease deadline. Failure scheduling and quarantine use
+before it retires the notification and deletes the queue row. It does not delete
+message history. Delivery waits end by the lease deadline. Failure scheduling and quarantine use
 claim-qualified writes. A drop guard releases that exact claim on cancellation,
 panic or an unmatched response. Missing sinks do not acquire claims.
 
