@@ -809,6 +809,7 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
     .with_id(pending.frame_id);
     let bytes = frame.to_bytes().unwrap();
     let mut snapshot = pending.clone();
+    snapshot.frame = bytes.clone();
     snapshot.relay_message_id = Some("mtp-sealed-v1:1".into());
     snapshot.type_map_version = map.version.to_string();
     let operation = tokio::spawn({
@@ -838,16 +839,13 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
     )
     .unwrap();
     assert_eq!(
-        context["recipient"],
-        serde_json::to_value(&fixture.ids[1]).unwrap()
-    );
-    assert_eq!(
-        context["signer"],
-        serde_json::to_value(&fixture.ids[0]).unwrap()
-    );
-    assert_eq!(
-        context["message_id"],
-        snapshot.relay_message_id.as_deref().unwrap()
+        context,
+        serde_json::json!({
+            "recipient": fixture.ids[1],
+            "signer": fixture.ids[0],
+            "message_id": snapshot.relay_message_id,
+            "dictionary_version": snapshot.type_map_version,
+        })
     );
     let acknowledgement = CommunicationValue::new_with_type_map(
         CommunicationType::Success,

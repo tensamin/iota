@@ -104,7 +104,8 @@ fence also covers receipt pages before sending account data to a client.
 
 ## Canonical relay delivery
 
-The connector accepts signed relays using negotiated dictionaries and current queue records.
+The connector accepts signed relays using negotiated dictionaries and current
+queue records.
 It does not decode, backfill, or apply historical sealed relay content.
 
 Install the process relay service with `install_relay_service`. Direct hosted
@@ -127,9 +128,9 @@ snapshot grants no network or mutation authority. The delivery transport uses th
 claimed snapshot. The acknowledgement transaction checks the immutable snapshot,
 `Ready` state and the current unexpired dispatch generation, owner and deadline
 before it retires the notification and deletes the queue row. It does not delete
-message history. Delivery waits end by the lease deadline. Failure scheduling and quarantine use
-claim-qualified writes. A drop guard releases that exact claim on cancellation,
-panic or an unmatched response. Missing sinks do not acquire claims.
+message history. Delivery waits end by the lease deadline. Failure scheduling and
+quarantine use claim-qualified writes. A drop guard releases that exact claim on
+cancellation, panic or an unmatched response.
 
 Remote delivery belongs to the process supervisor. `OmikronPeerRouter` compares
 the canonical route target with the V2 envelope's declared destination and sends
