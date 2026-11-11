@@ -140,7 +140,7 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
     )
     .unwrap();
     let owner_json = serde_json::to_string(&ids[0]).unwrap();
-    let map = mtp::codec::TypeMap::new(mtp::type_map::Version(1, 0));
+    let map = mtp::codec::TypeMap::new(mtp::type_map::Version(1, 3));
     let snapshot_request = tau::sync::encode_request(
         &tau::sync::Request::Snapshot {
             scope: tau::sync::Scope {
@@ -151,7 +151,7 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
                     .0
                     .auth_generation,
                 schema: tau::sync::SCHEMA.into(),
-                dictionary: tau_relay_protocol::dictionary_fingerprint("1.0").unwrap(),
+                dictionary: tau_relay_protocol::dictionary_fingerprint("1.3").unwrap(),
             },
             page: None,
             limit: 128,

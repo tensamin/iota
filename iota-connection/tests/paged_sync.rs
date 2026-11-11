@@ -1,17 +1,13 @@
 use iota_connection::message_handlers::handle_account_state_request;
 use iota_storage::util::{db, sync};
-use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
+use mtp::codec::TypeMap;
 use rusqlite::params;
 use tau::sync::{Cursor, Request, Response, Scope, SyncError};
 
 fn exchange(request: Request) -> Response {
-    let frame = CommunicationValue::new(CommunicationType::AccountStateRequest)
-        .with_sender(7)
-        .with_id(9)
-        .add_typed_default(
-            DataType::Json,
-            DataValue::Bytes(serde_json::to_vec(&request).unwrap()),
-        );
+    let frame = tau::sync::encode_request(&request, &TypeMap::latest(), 9)
+        .unwrap()
+        .with_sender(7);
     let response = handle_account_state_request(&frame);
     assert_eq!(response.id(), Some(9));
     assert_eq!(response.type_map(), frame.type_map());
@@ -44,7 +40,7 @@ fn pages_pin_state_authorize_scope_and_require_explicit_complete_acknowledgment(
             .0
             .auth_generation,
         schema: tau::sync::SCHEMA.into(),
-        dictionary: tau::relay_protocol::dictionary_fingerprint("1.0").unwrap(),
+        dictionary: tau::relay_protocol::dictionary_fingerprint("1.3").unwrap(),
     };
     let response = exchange(Request::Snapshot {
         scope: scope.clone(),
