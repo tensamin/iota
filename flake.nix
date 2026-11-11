@@ -255,7 +255,7 @@
               pname = "iota";
               version = "0.1.0";
               src = source;
-              hash = "sha256-Ma8aOciaA9VUPAK2qYrdsDrj4lI2AYDM+CIZRKCzm+I=";
+              hash = "sha256-PEDFVRR2c0GtzJP36X7Ev6mq3lNodYLq1W/zLYbZLZU=";
             };
           };
           cli = self.packages.${system}.default.overrideAttrs {

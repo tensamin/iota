@@ -16,6 +16,6 @@ pub use protocol::{
 pub use transport::{MAX_MESSAGE_SIZE, read_msg, write_msg};
 
 /// Current IPC protocol version.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 /// Minimum protocol version this daemon understands.
-pub const MIN_PROTOCOL_VERSION: u16 = 2;
+pub const MIN_PROTOCOL_VERSION: u16 = 6;

@@ -1,23 +1,35 @@
-DELETE FROM file_replication_jobs
-WHERE file_row_id IN (
-    SELECT old.id FROM files old
-    WHERE EXISTS (
-        SELECT 1 FROM files current
-        WHERE current.storage_user_id = old.storage_user_id
-          AND current.origin_principal = old.origin_principal
-          AND current.file_id = old.file_id AND current.version > old.version
-    )
-);
+CREATE TEMP TABLE retained_file_ids (id INTEGER PRIMARY KEY);
+INSERT INTO retained_file_ids
+SELECT id FROM (
+    SELECT file.id, ROW_NUMBER() OVER (
+        PARTITION BY file.storage_user_id, file.origin_principal, file.file_id
+        ORDER BY CASE WHEN file.state = 'ready' AND file.asset_id IS NOT NULL AND (
+            hosted.principal_handle IS NULL OR file.origin_principal = hosted.principal_handle OR (
+                origin.retired_at IS NULL AND EXISTS (
+                    SELECT 1 FROM file_share_grants grant
+                    WHERE grant.storage_user_id = file.storage_user_id
+                      AND grant.origin_principal = file.origin_principal
+                      AND grant.file_id = file.file_id AND grant.version = file.version
+                      AND grant.recipient_principal = hosted.principal_handle
+                      AND grant.state = 'accepted'
+                      AND grant.expires_at > CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM blocked_users blocked
+                    WHERE blocked.user_id = file.storage_user_id AND blocked.blocked_principal = file.origin_principal
+                )
+            )
+        ) THEN 1 ELSE 0 END DESC, file.version DESC
+    ) AS position
+    FROM files file
+    LEFT JOIN hosted_principals hosted ON hosted.local_user_id = file.storage_user_id
+    LEFT JOIN principals origin ON origin.principal_pk = file.origin_principal
+) WHERE position = 1;
 
-DELETE FROM files AS old
-WHERE EXISTS (
-    SELECT 1 FROM files current
-    WHERE current.storage_user_id = old.storage_user_id
-      AND current.origin_principal = old.origin_principal
-      AND current.file_id = old.file_id AND current.version > old.version
-);
+DELETE FROM file_replication_jobs WHERE file_row_id NOT IN (SELECT id FROM retained_file_ids);
+DELETE FROM files WHERE id NOT IN (SELECT id FROM retained_file_ids);
+DROP TABLE retained_file_ids;
 
-DELETE FROM file_changes
+UPDATE file_changes SET kind = 'retired', payload = '{}'
 WHERE COALESCE(json_extract(payload, '$.key'), json_extract(payload, '$.manifest.key')) IS NOT NULL
   AND NOT EXISTS (
       SELECT 1 FROM files file JOIN principals principal ON principal.principal_pk = file.origin_principal

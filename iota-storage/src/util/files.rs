@@ -431,7 +431,7 @@ pub fn list_page(owner: i64, page: &ListPage) -> Result<Value, StorageError> {
             )
         } else if let Some(chat) = page.namespace.strip_prefix("chat:") {
             (
-                "SELECT g.id,g.manifest FROM file_share_grants g WHERE g.storage_user_id=?1 AND g.chat_id=?2 AND g.state IN ('offered','accepted','rejected') AND g.expires_at > CAST((julianday('now')-2440587.5)*86400000 AS INTEGER) AND g.id>?3 AND NOT EXISTS(SELECT 1 FROM file_placements p WHERE p.storage_user_id=g.storage_user_id AND p.origin_principal=g.origin_principal AND p.file_id=g.file_id AND p.folder_id='chat:'||g.chat_id AND p.deleted=0 AND json_extract(p.payload,'$.hidden')=1) ORDER BY g.id LIMIT ?4",
+                "SELECT g.id,g.manifest FROM file_share_grants g JOIN files file ON file.storage_user_id=g.storage_user_id AND file.origin_principal=g.origin_principal AND file.file_id=g.file_id AND file.version=g.version WHERE g.storage_user_id=?1 AND g.chat_id=?2 AND g.state IN ('offered','accepted','rejected') AND g.expires_at > CAST((julianday('now')-2440587.5)*86400000 AS INTEGER) AND g.id>?3 AND NOT EXISTS(SELECT 1 FROM file_placements p WHERE p.storage_user_id=g.storage_user_id AND p.origin_principal=g.origin_principal AND p.file_id=g.file_id AND p.folder_id='chat:'||g.chat_id AND p.deleted=0 AND json_extract(p.payload,'$.hidden')=1) ORDER BY g.id LIMIT ?4",
                 chat,
             )
         } else if page.namespace == "shares" {

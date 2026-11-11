@@ -13,8 +13,9 @@ use std::time::Duration;
 use crate::storage_error::StorageError;
 
 const DB_NAME: &str = "messages";
-// "ITO2" identifies the supported storage layout. Older stores require a fresh database, not an upgrade.
-const STORAGE_FORMAT: i64 = 0x49544F32;
+// ITO2 is migrated transactionally to ITO3; older binaries reject the new marker instead of rewriting it.
+const STORAGE_FORMAT: i64 = 0x49544F33;
+const LEGACY_STORAGE_FORMAT: i64 = 0x49544F32;
 
 /// A simple r2d2 manager for rusqlite connections.
 pub struct SqliteManager {
@@ -100,9 +101,10 @@ fn verify_storage_format(connection: &Connection) -> Result<(), StorageError> {
         [],
         |row| row.get(0),
     )?;
-    if format != STORAGE_FORMAT && (format != 0 || populated) {
+    if format != STORAGE_FORMAT && format != LEGACY_STORAGE_FORMAT && (format != 0 || populated) {
         return Err(StorageError::Other(
-            "incompatible storage format; initialize a fresh database instead of upgrading this store".into(),
+            "incompatible storage format; use a matching binary or restore a compatible backup"
+                .into(),
         ));
     }
     Ok(())
