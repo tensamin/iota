@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 // Used by the legacy asset endpoints too. A guessed replica asset ID must not
 // bypass consent, revocation, expiry, or an account's blocklist.
-pub(crate) const ASSET_ACCESS: &str = "(NOT EXISTS(SELECT 1 FROM file_managed_assets m WHERE m.storage_user_id=user_assets.user_id AND m.asset_id=user_assets.asset_id) OR EXISTS(SELECT 1 FROM file_versions v JOIN hosted_principals h ON h.local_user_id=v.storage_user_id JOIN principals p ON p.principal_pk=v.origin_principal AND p.retired_at IS NULL WHERE v.storage_user_id=user_assets.user_id AND v.asset_id=user_assets.asset_id AND v.state='ready' AND (v.origin_principal=h.principal_handle OR (EXISTS(SELECT 1 FROM file_share_grants g WHERE g.storage_user_id=v.storage_user_id AND g.origin_principal=v.origin_principal AND g.file_id=v.file_id AND g.version=v.version AND g.recipient_principal=h.principal_handle AND g.state='accepted' AND g.expires_at>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)) AND NOT EXISTS(SELECT 1 FROM blocked_users b WHERE b.user_id=v.storage_user_id AND b.blocked_principal=v.origin_principal)))))";
+pub(crate) const ASSET_ACCESS: &str = "(NOT EXISTS(SELECT 1 FROM file_managed_assets m WHERE m.storage_user_id=user_assets.user_id AND m.asset_id=user_assets.asset_id) OR EXISTS(SELECT 1 FROM files v JOIN hosted_principals h ON h.local_user_id=v.storage_user_id JOIN principals p ON p.principal_pk=v.origin_principal AND p.retired_at IS NULL WHERE v.storage_user_id=user_assets.user_id AND v.asset_id=user_assets.asset_id AND v.state='ready' AND (v.origin_principal=h.principal_handle OR (EXISTS(SELECT 1 FROM file_share_grants g WHERE g.storage_user_id=v.storage_user_id AND g.origin_principal=v.origin_principal AND g.file_id=v.file_id AND g.version=v.version AND g.recipient_principal=h.principal_handle AND g.state='accepted' AND g.expires_at>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)) AND NOT EXISTS(SELECT 1 FROM blocked_users b WHERE b.user_id=v.storage_user_id AND b.blocked_principal=v.origin_principal)))))";
 
 pub(crate) fn invalid() -> StorageError {
     StorageError::InvalidRelayPayload("file request")
@@ -142,7 +142,7 @@ pub fn placement_put(owner: i64, placement: &Placement) -> Result<(), StorageErr
             check(own == placement.origin)?;
             private_folder(tx, owner, &placement.folder_id)?;
         }
-        let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM file_versions WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND state!='deleted')", params![owner,origin,placement.file_id], |r| r.get(0))?;
+        let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM files WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND state!='deleted')", params![owner,origin,placement.file_id], |r| r.get(0))?;
         check(exists)?;
         let payload = encode(placement)?;
         let old: Option<(i64,String,i64)> = tx.query_row("SELECT revision,payload,deleted FROM file_placements WHERE storage_user_id=?1 AND placement_id=?2", params![owner,placement.placement_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
@@ -244,22 +244,21 @@ pub fn upload_start(owner: i64, request: &FileUploadStart) -> Result<Value, Stor
     )
 }
 
-pub fn publish(owner: i64, publish: &PublishVersion) -> Result<(), StorageError> {
+pub fn publish(owner: i64, publish: &PublishFile) -> Result<(), StorageError> {
     publish.manifest.validate().map_err(|_| invalid())?;
     let m = &publish.manifest;
-    check(m.key.version.checked_sub(1) == Some(publish.expected_predecessor))?;
+    check(m.key.version == 1)?;
     db::with_immediate_transaction(|tx| {
         let own = owner_principal_on(tx, owner)?;
         check(own == m.key.origin && own == m.envelope.recipient)?;
         let origin = handle_on(tx, &own)?;
         not_deleted(tx, owner, origin, &m.key.file_id)?;
+        sharing::require_file_context(tx, owner, origin, &m.key)?;
         let payload = encode(m)?;
-        let previous: Option<(String,Option<String>)> = tx.query_row("SELECT manifest,asset_id FROM file_versions WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4", params![owner,origin,m.key.file_id,m.key.version], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let previous: Option<(String,Option<String>)> = tx.query_row("SELECT manifest,asset_id FROM files WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3", params![owner,origin,m.key.file_id], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
         if let Some((old, asset)) = previous {
             return check(old == payload && asset.as_deref() == Some(&publish.asset_id));
         }
-        let latest: i64 = tx.query_row("SELECT COALESCE(MAX(version),0) FROM file_versions WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3", params![owner,origin,m.key.file_id], |r| r.get(0))?;
-        check(latest == publish.expected_predecessor)?;
         let asset: Option<(i64,Vec<u8>,String)> = tx.query_row("SELECT size,sha256,mime_type FROM user_assets WHERE user_id=?1 AND asset_id=?2 AND deleted=0", params![owner,publish.asset_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
         let (size, hash, mime) = asset.ok_or_else(invalid)?;
         check(
@@ -267,12 +266,12 @@ pub fn publish(owner: i64, publish: &PublishVersion) -> Result<(), StorageError>
                 && hash == m.ciphertext_sha256
                 && mime == "application/octet-stream",
         )?;
-        tx.execute("INSERT INTO file_versions(storage_user_id,origin_principal,file_id,version,manifest,asset_id,state) VALUES(?1,?2,?3,?4,?5,?6,'ready')", params![owner,origin,m.key.file_id,m.key.version,payload,publish.asset_id])?;
+        tx.execute("INSERT INTO files(storage_user_id,origin_principal,file_id,version,manifest,asset_id,state) VALUES(?1,?2,?3,?4,?5,?6,'ready')", params![owner,origin,m.key.file_id,m.key.version,payload,publish.asset_id])?;
         tx.execute(
             "INSERT OR IGNORE INTO file_managed_assets(storage_user_id,asset_id) VALUES(?1,?2)",
             params![owner, publish.asset_id],
         )?;
-        change(tx, owner, "version", m)
+        change(tx, owner, "file", m)
     })
 }
 
@@ -287,9 +286,9 @@ pub fn delete_file(owner: i64, file_id: &str) -> Result<(), StorageError> {
             "INSERT OR IGNORE INTO file_tombstones VALUES(?1,?2,?3)",
             params![owner, origin, file_id],
         )?;
-        tx.execute("DELETE FROM file_replication_jobs WHERE version_id IN (SELECT id FROM file_versions WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3)", params![owner,origin,file_id])?;
-        tx.execute("UPDATE file_versions SET asset_id=NULL,state='deleted' WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3", params![owner,origin,file_id])?;
-        tx.execute("UPDATE user_assets SET deleted=1 WHERE user_id=?1 AND asset_id IN (SELECT asset_id FROM file_managed_assets WHERE storage_user_id=?1) AND NOT EXISTS(SELECT 1 FROM file_versions v WHERE v.storage_user_id=?1 AND v.asset_id=user_assets.asset_id)",[owner])?;
+        tx.execute("DELETE FROM file_replication_jobs WHERE file_row_id IN (SELECT id FROM files WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3)", params![owner,origin,file_id])?;
+        tx.execute("UPDATE files SET asset_id=NULL,state='deleted' WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3", params![owner,origin,file_id])?;
+        tx.execute("UPDATE user_assets SET deleted=1 WHERE user_id=?1 AND asset_id IN (SELECT asset_id FROM file_managed_assets WHERE storage_user_id=?1) AND NOT EXISTS(SELECT 1 FROM files v WHERE v.storage_user_id=?1 AND v.asset_id=user_assets.asset_id)",[owner])?;
         tx.execute("UPDATE file_placements SET deleted=1 WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3", params![owner,origin,file_id])?;
         change(
             tx,
@@ -307,7 +306,7 @@ pub fn rewrap(owner: i64, request: &RewrapKey) -> Result<(), StorageError> {
         if request.key.origin != own {
             sharing::require_recipient_on(tx, owner, &request.key)?;
         }
-        let (id, mut manifest, _, _) = version_on(tx, owner, &request.key)?;
+        let (id, mut manifest, _, _) = file_on(tx, owner, &request.key)?;
         if manifest.envelope == request.envelope {
             return Ok(());
         }
@@ -317,7 +316,7 @@ pub fn rewrap(owner: i64, request: &RewrapKey) -> Result<(), StorageError> {
         manifest.envelope = request.envelope.clone();
         manifest.validate().map_err(|_| invalid())?;
         tx.execute(
-            "UPDATE file_versions SET manifest=?2 WHERE id=?1",
+            "UPDATE files SET manifest=?2 WHERE id=?1",
             params![id, encode(&manifest)?],
         )?;
         change(tx, owner, "key_envelope", &manifest)
@@ -332,12 +331,12 @@ pub fn metadata_put(owner: i64, request: &MetadataUpdate) -> Result<(), StorageE
     )?;
     db::with_immediate_transaction(|tx| {
         check(owner_principal_on(tx, owner)? == request.key.origin)?;
-        let (id, mut manifest, _, _) = version_on(tx, owner, &request.key)?;
+        let (id, mut manifest, _, _) = file_on(tx, owner, &request.key)?;
         if manifest.manifest_ciphertext == request.manifest_ciphertext {
             return Ok(());
         }
         let revision: i64 = tx.query_row(
-            "SELECT metadata_revision FROM file_versions WHERE id=?1",
+            "SELECT metadata_revision FROM files WHERE id=?1",
             [id],
             |r| r.get(0),
         )?;
@@ -347,7 +346,7 @@ pub fn metadata_put(owner: i64, request: &MetadataUpdate) -> Result<(), StorageE
         let revision = revision.checked_add(1).ok_or_else(invalid)?;
         manifest.manifest_ciphertext = request.manifest_ciphertext.clone();
         tx.execute(
-            "UPDATE file_versions SET manifest=?2,metadata_revision=?3 WHERE id=?1",
+            "UPDATE files SET manifest=?2,metadata_revision=?3 WHERE id=?1",
             params![id, encode(&manifest)?, revision],
         )?;
         change(
@@ -359,7 +358,7 @@ pub fn metadata_put(owner: i64, request: &MetadataUpdate) -> Result<(), StorageE
     })
 }
 
-pub(crate) fn version_on(
+pub(crate) fn file_on(
     conn: &Connection,
     owner: i64,
     key: &FileKey,
@@ -367,23 +366,23 @@ pub(crate) fn version_on(
     key.validate().map_err(|_| invalid())?;
     let origin = handle_on(conn, &key.origin)?;
     not_deleted(conn, owner, origin, &key.file_id)?;
-    let (id,payload,asset,state): (i64,String,Option<String>,String) = conn.query_row("SELECT id,manifest,asset_id,state FROM file_versions WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND state!='deleted'", params![owner,origin,key.file_id,key.version], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?.ok_or(StorageError::MissingRelayDependency)?;
+    let (id,payload,asset,state): (i64,String,Option<String>,String) = conn.query_row("SELECT id,manifest,asset_id,state FROM files WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND state!='deleted'", params![owner,origin,key.file_id,key.version], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?.ok_or(StorageError::MissingRelayDependency)?;
     Ok((id, decode(&payload)?, asset, state))
 }
 
 pub fn manifest(owner: i64, key: &FileKey) -> Result<Value, StorageError> {
     db::with_db(|conn| {
         let own = owner_principal_on(conn, owner)?;
-        let (id, manifest, asset, state) = version_on(conn, owner, key)?;
+        let (id, manifest, asset, state) = file_on(conn, owner, key)?;
         if own != key.origin {
             sharing::require_grant_on(conn, owner, key, true)?;
         }
         let metadata_revision: i64 = conn.query_row(
-            "SELECT metadata_revision FROM file_versions WHERE id=?1",
+            "SELECT metadata_revision FROM files WHERE id=?1",
             [id],
             |r| r.get(0),
         )?;
-        let progress: Option<(i64,i64,Option<String>,i64)> = conn.query_row("SELECT COALESCE(u.received,0),j.attempts,j.last_error,j.next_attempt_at FROM file_replication_jobs j LEFT JOIN user_asset_uploads u ON u.user_id=?1 AND u.upload_id=j.upload_id WHERE j.version_id=?2",params![owner,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        let progress: Option<(i64,i64,Option<String>,i64)> = conn.query_row("SELECT COALESCE(u.received,0),j.attempts,j.last_error,j.next_attempt_at FROM file_replication_jobs j LEFT JOIN user_asset_uploads u ON u.user_id=?1 AND u.upload_id=j.upload_id WHERE j.file_row_id=?2",params![owner,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
         let proof: Option<String> = conn.query_row("SELECT proof FROM file_share_grants WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND state IN ('offered','accepted','rejected') AND expires_at>?5 ORDER BY revision DESC LIMIT 1",params![owner,handle_on(conn,&key.origin)?,key.file_id,key.version,sync::now_millis()],|r|r.get(0)).optional()?.flatten();
         let reserved: i64 = conn.query_row("SELECT COALESCE(SUM(size),0) FROM user_asset_uploads WHERE user_id=?1 AND state='uploading'",[owner],|r|r.get(0))?;
         Ok(
@@ -432,11 +431,9 @@ pub fn list_page(owner: i64, page: &ListPage) -> Result<Value, StorageError> {
             )
         } else if let Some(chat) = page.namespace.strip_prefix("chat:") {
             (
-                "SELECT g.id,g.manifest FROM file_share_grants g WHERE g.storage_user_id=?1 AND g.chat_id=?2 AND g.state IN ('offered','accepted','rejected') AND g.expires_at > CAST((julianday('now')-2440587.5)*86400000 AS INTEGER) AND g.id>?3 AND NOT EXISTS(SELECT 1 FROM file_share_grants newer WHERE newer.storage_user_id=g.storage_user_id AND newer.origin_principal=g.origin_principal AND newer.file_id=g.file_id AND newer.chat_id=g.chat_id AND newer.version>g.version AND newer.state IN ('offered','accepted','rejected') AND newer.expires_at>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)) AND NOT EXISTS(SELECT 1 FROM file_placements p WHERE p.storage_user_id=g.storage_user_id AND p.origin_principal=g.origin_principal AND p.file_id=g.file_id AND p.folder_id='chat:'||g.chat_id AND p.deleted=0 AND json_extract(p.payload,'$.hidden')=1) ORDER BY g.id LIMIT ?4",
+                "SELECT g.id,g.manifest FROM file_share_grants g WHERE g.storage_user_id=?1 AND g.chat_id=?2 AND g.state IN ('offered','accepted','rejected') AND g.expires_at > CAST((julianday('now')-2440587.5)*86400000 AS INTEGER) AND g.id>?3 AND NOT EXISTS(SELECT 1 FROM file_placements p WHERE p.storage_user_id=g.storage_user_id AND p.origin_principal=g.origin_principal AND p.file_id=g.file_id AND p.folder_id='chat:'||g.chat_id AND p.deleted=0 AND json_extract(p.payload,'$.hidden')=1) ORDER BY g.id LIMIT ?4",
                 chat,
             )
-        } else if page.namespace == "versions" {
-            return versions_page(conn, owner, page);
         } else if page.namespace == "shares" {
             return shares_page(conn, owner, page);
         } else {
@@ -455,38 +452,6 @@ pub fn list_page(owner: i64, page: &ListPage) -> Result<Value, StorageError> {
         }
         Ok(json!({"items":items,"next":null}))
     })
-}
-
-fn versions_page(conn: &Connection, owner: i64, page: &ListPage) -> Result<Value, StorageError> {
-    let own = owner_principal_on(conn, owner)?;
-    let principal = page.origin.as_ref().unwrap_or(&own);
-    let origin = handle_on(conn, principal)?;
-    let mut statement = conn.prepare("SELECT id,manifest FROM file_versions v WHERE storage_user_id=?1 AND file_id=?2 AND origin_principal=?3 AND state!='deleted' AND id>?4 AND (?6 OR (EXISTS(SELECT 1 FROM file_share_grants g WHERE g.storage_user_id=v.storage_user_id AND g.origin_principal=v.origin_principal AND g.file_id=v.file_id AND g.version=v.version AND g.state IN ('offered','accepted') AND g.expires_at>?7) AND NOT EXISTS(SELECT 1 FROM blocked_users b WHERE b.user_id=?1 AND b.blocked_principal=?3))) ORDER BY id LIMIT ?5")?;
-    let mut items = Vec::new();
-    let mut bytes = encode(&json!({"items":[],"next":i64::MAX}))?.len();
-    let mut next = page.after;
-    let mut more = false;
-    for row in statement.query_map(
-        params![
-            owner,
-            page.folder_id,
-            origin,
-            page.after,
-            PAGE_SIZE as i64 + 1,
-            principal == &own,
-            sync::now_millis()
-        ],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
-    )? {
-        let (id, payload) = row?;
-        let m: FileManifest = decode(&payload)?;
-        if !push_page_item(&mut items, &mut bytes, m)? {
-            more = true;
-            break;
-        }
-        next = id;
-    }
-    Ok(json!({"items":items,"next":if more { Some(next) } else { None }}))
 }
 
 fn shares_page(conn: &Connection, owner: i64, page: &ListPage) -> Result<Value, StorageError> {
@@ -576,7 +541,7 @@ pub fn maintenance() -> Result<(), StorageError> {
     crate::util::user_assets::cleanup_abandoned()?;
     let now = sync::now_millis();
     db::with_immediate_transaction(|tx| {
-        let mut statement = tx.prepare("SELECT v.storage_user_id,v.manifest FROM file_versions v JOIN hosted_principals h ON h.local_user_id=v.storage_user_id WHERE v.origin_principal!=h.principal_handle AND v.state IN ('ready','transferring','failed') AND (EXISTS(SELECT 1 FROM principals p WHERE p.principal_pk=v.origin_principal AND p.retired_at IS NOT NULL) OR EXISTS(SELECT 1 FROM blocked_users b WHERE b.user_id=v.storage_user_id AND b.blocked_principal=v.origin_principal) OR NOT EXISTS(SELECT 1 FROM file_share_grants g WHERE g.storage_user_id=v.storage_user_id AND g.origin_principal=v.origin_principal AND g.file_id=v.file_id AND g.version=v.version AND g.state='accepted' AND g.expires_at>?1)) LIMIT 128")?;
+        let mut statement = tx.prepare("SELECT v.storage_user_id,v.manifest FROM files v JOIN hosted_principals h ON h.local_user_id=v.storage_user_id WHERE v.origin_principal!=h.principal_handle AND v.state IN ('ready','transferring','failed') AND (EXISTS(SELECT 1 FROM principals p WHERE p.principal_pk=v.origin_principal AND p.retired_at IS NOT NULL) OR EXISTS(SELECT 1 FROM blocked_users b WHERE b.user_id=v.storage_user_id AND b.blocked_principal=v.origin_principal) OR NOT EXISTS(SELECT 1 FROM file_share_grants g WHERE g.storage_user_id=v.storage_user_id AND g.origin_principal=v.origin_principal AND g.file_id=v.file_id AND g.version=v.version AND g.state='accepted' AND g.expires_at>?1)) LIMIT 128")?;
         let replicas = statement
             .query_map([now], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -588,8 +553,8 @@ pub fn maintenance() -> Result<(), StorageError> {
             sharing::retire_replica_in_tx(tx, owner, &manifest.key)?;
             change(tx, owner, "replica_expired", &manifest.key)?;
         }
-        tx.execute("UPDATE file_managed_assets SET released_at=NULL WHERE EXISTS(SELECT 1 FROM file_versions v WHERE v.storage_user_id=file_managed_assets.storage_user_id AND v.asset_id=file_managed_assets.asset_id) OR EXISTS(SELECT 1 FROM user_asset_uploads u WHERE u.user_id=file_managed_assets.storage_user_id AND u.asset_id=file_managed_assets.asset_id AND u.state='uploading') OR EXISTS(SELECT 1 FROM file_replication_jobs j JOIN file_versions v ON v.id=j.version_id WHERE v.storage_user_id=file_managed_assets.storage_user_id AND j.asset_id=file_managed_assets.asset_id)",[])?;
-        tx.execute("UPDATE file_managed_assets SET released_at=?1 WHERE released_at IS NULL AND NOT EXISTS(SELECT 1 FROM file_versions v WHERE v.storage_user_id=file_managed_assets.storage_user_id AND v.asset_id=file_managed_assets.asset_id) AND NOT EXISTS(SELECT 1 FROM user_asset_uploads u WHERE u.user_id=file_managed_assets.storage_user_id AND u.asset_id=file_managed_assets.asset_id AND u.state='uploading') AND NOT EXISTS(SELECT 1 FROM file_replication_jobs j JOIN file_versions v ON v.id=j.version_id WHERE v.storage_user_id=file_managed_assets.storage_user_id AND j.asset_id=file_managed_assets.asset_id)",[now])?;
+        tx.execute("UPDATE file_managed_assets SET released_at=NULL WHERE EXISTS(SELECT 1 FROM files v WHERE v.storage_user_id=file_managed_assets.storage_user_id AND v.asset_id=file_managed_assets.asset_id) OR EXISTS(SELECT 1 FROM user_asset_uploads u WHERE u.user_id=file_managed_assets.storage_user_id AND u.asset_id=file_managed_assets.asset_id AND u.state='uploading') OR EXISTS(SELECT 1 FROM file_replication_jobs j JOIN files v ON v.id=j.file_row_id WHERE v.storage_user_id=file_managed_assets.storage_user_id AND j.asset_id=file_managed_assets.asset_id)",[])?;
+        tx.execute("UPDATE file_managed_assets SET released_at=?1 WHERE released_at IS NULL AND NOT EXISTS(SELECT 1 FROM files v WHERE v.storage_user_id=file_managed_assets.storage_user_id AND v.asset_id=file_managed_assets.asset_id) AND NOT EXISTS(SELECT 1 FROM user_asset_uploads u WHERE u.user_id=file_managed_assets.storage_user_id AND u.asset_id=file_managed_assets.asset_id AND u.state='uploading') AND NOT EXISTS(SELECT 1 FROM file_replication_jobs j JOIN files v ON v.id=j.file_row_id WHERE v.storage_user_id=file_managed_assets.storage_user_id AND j.asset_id=file_managed_assets.asset_id)",[now])?;
         Ok(())
     })?;
     let garbage = db::with_db(|conn| {
@@ -613,9 +578,9 @@ pub fn maintenance() -> Result<(), StorageError> {
 }
 
 pub(crate) fn purge_in_tx(tx: &Transaction<'_>, owner: i64) -> Result<(), StorageError> {
-    tx.execute("DELETE FROM file_replication_jobs WHERE version_id IN (SELECT id FROM file_versions WHERE storage_user_id=?1)",[owner])?;
+    tx.execute("DELETE FROM file_replication_jobs WHERE file_row_id IN (SELECT id FROM files WHERE storage_user_id=?1)",[owner])?;
     for table in [
-        "file_versions",
+        "files",
         "file_tombstones",
         "file_folders",
         "file_placements",

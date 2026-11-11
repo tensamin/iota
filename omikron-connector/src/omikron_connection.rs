@@ -3,7 +3,6 @@
     reason = "return protocol error frames directly to the sender"
 )]
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use dashmap::DashSet;
 use iota_logger::{LogLevel, log, log_cv_in, log_cv_out, log_t};
 use iota_state::AppState;
@@ -13,9 +12,8 @@ use iota_storage::util::{chat_files, client_relay_delivery, relay_queue};
 use iota_util::crypto_helper::{self, keyring_from_base64};
 use mtp::client::{Client, ClientConfig, MTPConnection, Policy, SendMode, Sender};
 use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataTypeId, DataValue, TypeMap};
-use mtp::crypto::{Ed25519Signer, Keyring, PublicKeyBundle, SignatureScheme};
+use mtp::crypto::{Keyring, PublicKeyBundle};
 use rand_core::RngCore;
-use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -37,7 +35,6 @@ mod relay;
 mod requests;
 mod storage_handlers;
 mod supervisor;
-mod tauth_handlers;
 mod workers;
 
 use crate::client::{OmikronClient, OmikronError};
@@ -46,7 +43,7 @@ use crate::password::PasswordAuthRuntime;
 
 use iota_connection::message_common::*;
 use iota_connection::message_handlers;
-use iota_identity::{AuthorityLocator, LocalUserStore};
+use iota_identity::LocalUserStore;
 
 // ============================================================================
 // Configuration
@@ -380,12 +377,6 @@ fn expected_response(expected: Option<CommunicationType>, response: &Communicati
                 Some(CommunicationType::GetChatSecret),
                 Some(CommunicationType::ChatSecretResponse)
             ) | (
-                Some(CommunicationType::TAuthAuthorize),
-                Some(CommunicationType::TAuthAuthorizationResult)
-            ) | (
-                Some(CommunicationType::TAuthExchangeCode),
-                Some(CommunicationType::TAuthExchangeCodeResponse)
-            ) | (
                 Some(CommunicationType::PasswordEnrollmentStart),
                 Some(CommunicationType::PasswordEnrollmentResponse)
             ) | (
@@ -471,33 +462,6 @@ impl Drop for PendingOperation {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
     }
-}
-
-#[derive(Serialize)]
-struct TAuthLocatorUnsigned<'a> {
-    version: u16,
-    principal: &'a str,
-    omikron_url: &'a str,
-    omikron_public_key: &'a str,
-    target_iota_id: u64,
-    iota_public_key: &'a str,
-    issued_at: i64,
-}
-
-#[derive(Serialize)]
-struct TAuthLocator<'a> {
-    version: u16,
-    principal: &'a str,
-    omikron_url: &'a str,
-    omikron_public_key: &'a str,
-    target_iota_id: u64,
-    iota_public_key: &'a str,
-    issued_at: i64,
-    signature: String,
-}
-
-fn string_array(values: &[String]) -> DataValue {
-    DataValue::Array(values.iter().cloned().map(DataValue::Str).collect())
 }
 
 impl ConnectionState {

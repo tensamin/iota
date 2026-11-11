@@ -18,8 +18,8 @@ mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "eef7562be64e77d8c29b
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = "0.40.0"
-tau-relay-protocol = { git = "https://github.com/TensaminDev/Tau.git", rev = "d6183368f3e2b91b3c3d86eae3802654b349be10" }
-tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "d6183368f3e2b91b3c3d86eae3802654b349be10" }
+tau-relay-protocol = { git = "https://github.com/TensaminDev/Tau.git", rev = "bbe79b55b6b5d98c4b17265bb5ed210a1769bccd" }
+tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "bbe79b55b6b5d98c4b17265bb5ed210a1769bccd" }
 tokio = { version = "1.50.0", features = ["rt"] }
 uuid = "1"
 

@@ -215,46 +215,13 @@ pub fn get_users() -> Result<Vec<UserProfile>, crate::storage_error::StorageErro
     })
 }
 
-pub fn revoke_tauth_grant(
-    user_id: i64,
-    app_id: &str,
-) -> Result<bool, crate::storage_error::StorageError> {
-    crate::tauth::revoke_grant(user_id, app_id)
-        .map_err(|error| crate::storage_error::StorageError::Other(error.to_string()))
-}
-
-pub fn revoke_all_tauth_grants(user_id: i64) -> Result<usize, crate::storage_error::StorageError> {
-    let grants = crate::tauth::list_grants(user_id)
-        .map_err(|error| crate::storage_error::StorageError::Other(error.to_string()))?;
-    for grant in &grants {
-        crate::tauth::revoke_grant(user_id, &grant.app_id)
-            .map_err(|error| crate::storage_error::StorageError::Other(error.to_string()))?;
-    }
-    Ok(grants.len())
-}
-
 pub fn remove_user(user_id: i64) -> Result<(), crate::storage_error::StorageError> {
     db::with_immediate_transaction(|conn| {
         conn.execute(
             "DELETE FROM user_password_credentials WHERE user_id = ?1",
             params![user_id],
         )?;
-        conn.execute(
-            "DELETE FROM tauth_codes WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
-        conn.execute(
-            "DELETE FROM tauth_sessions WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
-        conn.execute(
-            "DELETE FROM tauth_metadata WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
-        conn.execute(
-            "DELETE FROM tauth_grants WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
+
         conn.execute("DELETE FROM users WHERE user_id = ?1", params![user_id])?;
         Ok(())
     })
@@ -291,22 +258,6 @@ pub fn finalize_local_release(
         ));
     };
     db::with_immediate_transaction(|tx| {
-        tx.execute(
-            "DELETE FROM tauth_codes WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
-        tx.execute(
-            "DELETE FROM tauth_sessions WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
-        tx.execute(
-            "DELETE FROM tauth_metadata WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
-        tx.execute(
-            "DELETE FROM tauth_grants WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
         tx.execute("DELETE FROM users WHERE user_id = ?1", params![user_id])?;
         // OPAQUE records cannot authenticate against another Iota's ServerSetup.
         // Reassignment requires enrollment again from an authenticated device.
@@ -615,22 +566,6 @@ pub fn erase_user_locally(user_id: i64) -> Result<(), crate::storage_error::Stor
     }
     purge_user_data(user_id)?;
     db::with_db(|conn| {
-        conn.execute(
-            "DELETE FROM tauth_codes WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
-        conn.execute(
-            "DELETE FROM tauth_sessions WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
-        conn.execute(
-            "DELETE FROM tauth_metadata WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
-        conn.execute(
-            "DELETE FROM tauth_grants WHERE local_user_id = ?1",
-            params![user_id],
-        )?;
         conn.execute("DELETE FROM users WHERE user_id = ?1", params![user_id])?;
         conn.execute(
             "DELETE FROM user_password_credentials WHERE user_id = ?1",
@@ -704,7 +639,7 @@ pub fn get_residency_by_id(
 pub fn clear() -> Result<(), crate::storage_error::StorageError> {
     db::with_immediate_transaction(|conn| {
         conn.execute_batch(
-            "DELETE FROM tauth_codes; DELETE FROM tauth_sessions; DELETE FROM tauth_metadata; DELETE FROM tauth_grants; DELETE FROM user_password_credentials; DELETE FROM protected_command_replay; DELETE FROM users; DELETE FROM user_residency;",
+            "DELETE FROM user_password_credentials; DELETE FROM protected_command_replay; DELETE FROM users; DELETE FROM user_residency;",
         )?;
         Ok(())
     })

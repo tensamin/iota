@@ -7,6 +7,5 @@ pub mod node_transition;
 pub mod peer_admission;
 pub mod relay_mailbox;
 pub mod storage_error;
-pub mod tauth;
 pub mod users;
 pub mod util;

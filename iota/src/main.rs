@@ -7,7 +7,6 @@ use help::{print_completions, print_help, print_man_page};
 mod commands;
 use commands::run_command;
 mod output;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use iota_cli::{
     ipc_client::IpcClient, screens::main_screen::MainScreen, theme,
     ui::start_bootstrap_tui_with_config,

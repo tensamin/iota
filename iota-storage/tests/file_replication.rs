@@ -54,11 +54,11 @@ fn local_jobs_are_selected_before_the_page_limit_and_share_cancellable_bounded_c
                 "manifest_ciphertext":vec![1;41],"envelope":{"recipient":recipient,"key_id":"recipient-key",
                     "wrapping_scheme":"tensamin-file-dek-kem-v1","kem_ciphertext":[1],"encrypted_dek":vec![1;72]},
             }).to_string();
-            tx.execute("INSERT INTO file_versions(id,storage_user_id,origin_principal,file_id,version,manifest,state) VALUES(?1,7,102,?2,1,?3,'transferring')", params![index+1,format!("file-{index}"),manifest])?;
-            tx.execute("INSERT INTO file_replication_jobs(version_id,upload_id,asset_id) VALUES(?1,?2,?3)", params![index+1,uuid::Uuid::new_v4().to_string(),uuid::Uuid::new_v4().to_string()])?;
+            tx.execute("INSERT INTO files(id,storage_user_id,origin_principal,file_id,version,manifest,state) VALUES(?1,7,102,?2,1,?3,'transferring')", params![index+1,format!("file-{index}"),manifest])?;
+            tx.execute("INSERT INTO file_replication_jobs(file_row_id,upload_id,asset_id) VALUES(?1,?2,?3)", params![index+1,uuid::Uuid::new_v4().to_string(),uuid::Uuid::new_v4().to_string()])?;
             tx.execute("INSERT INTO file_share_grants(storage_user_id,origin_principal,file_id,version,recipient_principal,chat_id,revision,state,expires_at,manifest,source_node) VALUES(7,102,?1,1,101,?2,1,'accepted',?3,?4,?5)", params![format!("file-{index}"),chat,sync::now_millis()+3_600_000,manifest,if index==8 {&local} else {&remote}])?;
             if index == 8 {
-                tx.execute("INSERT INTO file_versions(id,storage_user_id,origin_principal,file_id,version,manifest,asset_id,state) VALUES(100,8,102,'file-8',1,?1,?2,'ready')", params![manifest,source_asset])?;
+                tx.execute("INSERT INTO files(id,storage_user_id,origin_principal,file_id,version,manifest,asset_id,state) VALUES(100,8,102,'file-8',1,?1,?2,'ready')", params![manifest,source_asset])?;
                 tx.execute("INSERT INTO file_share_grants(storage_user_id,origin_principal,file_id,version,recipient_principal,chat_id,revision,state,expires_at,manifest,source_node) VALUES(8,102,'file-8',1,101,?1,1,'offered',?2,?3,?4)", params![chat,sync::now_millis()+3_600_000,manifest,local])?;
             }
         }

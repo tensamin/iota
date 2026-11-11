@@ -69,7 +69,25 @@ fn create_pool_with_timeout(
 pub(crate) fn initialize_schema(connection: &Connection) -> Result<(), StorageError> {
     verify_storage_format(connection)?;
     let transaction = connection.unchecked_transaction()?;
+    let legacy_files: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='file_versions')",
+        [],
+        |row| row.get(0),
+    )?;
+    if legacy_files {
+        transaction.execute_batch(
+            "ALTER TABLE file_versions RENAME TO files; ALTER TABLE file_replication_jobs RENAME COLUMN version_id TO file_row_id;",
+        )?;
+    }
     transaction.execute_batch(include_str!("../../migrations/0001_initial.sql"))?;
+    transaction.execute_batch(include_str!(
+        "../../migrations/0002_remove_connected_apps.sql"
+    ))?;
+    if legacy_files {
+        transaction.execute_batch(include_str!(
+            "../../migrations/0003_single_file_storage.sql"
+        ))?;
+    }
     transaction.pragma_update(None, "application_id", STORAGE_FORMAT)?;
     transaction.commit()?;
     Ok(())

@@ -1030,7 +1030,7 @@ fn spawn_ipc_effect(
                     Ok(iota_ipc::ResponseResult::Ok(
                         iota_ipc::ResponsePayload::UserDiagnostics(diagnostics),
                     )) => Ok(format!(
-                        "Diagnostics: state={:?}, data={}, credential={}, TAuth grants={}, pending={}",
+                        "Diagnostics: state={:?}, data={}, credential={}, pending={}",
                         diagnostics.local_state,
                         if diagnostics.data_present {
                             "present"
@@ -1038,7 +1038,6 @@ fn spawn_ipc_effect(
                             "empty"
                         },
                         credential_status_label(diagnostics.credential_status),
-                        diagnostics.tauth_grant_count,
                         diagnostics
                             .pending_operation
                             .unwrap_or_else(|| "none".into()),

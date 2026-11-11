@@ -21,14 +21,9 @@ pub(super) fn print_help() {
     println!("  users repair diagnostics <ID> Show local lifecycle diagnostics");
     println!("  users repair force-detach <ID> Remove local management (requires --yes)");
     println!("  users forget <ID>      Forget an empty released residency (requires --yes)");
-    println!("  users apps revoke <ID> <APP> Revoke a trusted app (requires --yes)");
-    println!("  users apps revoke-all <ID> Revoke all TAuth grants (requires --yes)");
+
     println!("  users credential export <ID> --output <PATH> Export the local TU");
-    println!("  apps list              List owned TAuth apps");
-    println!("  apps show <APP_ID>     Show an owned TAuth app");
-    println!("  apps create ...        Create and export a TAuth app");
-    println!("  apps export <APP_ID> --output <PATH> Export an existing .ta");
-    println!("  apps delete <APP_ID>   Delete app key and registration (requires --yes)");
+
     println!("  omikron status         Show Omikron connection status");
     println!("  omikron reconnect      Reconnect to Omikron");
     println!("  identity rotate        Rotate identity keys (requires --yes)");

@@ -7,6 +7,20 @@ fn same_content(a: &FileManifest, b: &FileManifest) -> bool {
         && a.crypto_format == b.crypto_format
 }
 
+pub(super) fn require_file_context(
+    conn: &Connection,
+    owner: i64,
+    origin: i64,
+    key: &FileKey,
+) -> Result<(), StorageError> {
+    let conflict: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM files WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version!=?4) OR (NOT EXISTS(SELECT 1 FROM files WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3) AND COALESCE((SELECT MAX(version) FROM file_share_grants WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3),?4)!=?4)",
+        params![owner, origin, key.file_id, key.version],
+        |row| row.get(0),
+    )?;
+    check(!conflict)
+}
+
 pub fn apply_offer_in_tx(
     tx: &Transaction<'_>,
     owner: i64,
@@ -41,6 +55,7 @@ pub fn apply_offer_in_tx(
             },
     )?;
     not_deleted(tx, owner, signer.0, &m.key.file_id)?;
+    require_file_context(tx, owner, signer.0, &m.key)?;
     let old: Option<(i64,String,Option<String>,i64)> = tx.query_row("SELECT revision,state,manifest,expires_at FROM file_share_grants WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND recipient_principal=?5 AND chat_id=?6", params![owner,signer.0,m.key.file_id,m.key.version,recipient.0,offer.chat_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     let payload = encode(m)?;
     if let Some((revision, state, previous, expires_at)) = old {
@@ -60,7 +75,7 @@ pub fn apply_offer_in_tx(
         return Err(StorageError::AssetResourceLimit("max_file_grants"));
     }
     if sent_by_self {
-        let (_, own, asset, state) = version_on(tx, owner, &m.key)?;
+        let (_, own, asset, state) = file_on(tx, owner, &m.key)?;
         check(
             same_content(m, &own)
                 && m.manifest_ciphertext == own.manifest_ciphertext
@@ -69,7 +84,7 @@ pub fn apply_offer_in_tx(
         )?;
     } else {
         check(source_node.is_some())?;
-        let existing: Option<String> = tx.query_row("SELECT manifest FROM file_versions WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4", params![owner,signer.0,m.key.file_id,m.key.version], |r| r.get(0)).optional()?;
+        let existing: Option<String> = tx.query_row("SELECT manifest FROM files WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4", params![owner,signer.0,m.key.file_id,m.key.version], |r| r.get(0)).optional()?;
         if let Some(existing) = existing {
             // Rotation may replace only this recipient's wrapped key. The
             // signed content descriptor remains immutable across grant revisions.
@@ -77,9 +92,9 @@ pub fn apply_offer_in_tx(
             check(
                 same_content(&previous, m) && previous.envelope.recipient == m.envelope.recipient,
             )?;
-            tx.execute("UPDATE file_versions SET manifest=?5 WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4",params![owner,signer.0,m.key.file_id,m.key.version,payload])?;
+            tx.execute("UPDATE files SET manifest=?5 WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4",params![owner,signer.0,m.key.file_id,m.key.version,payload])?;
         } else {
-            tx.execute("INSERT INTO file_versions(storage_user_id,origin_principal,file_id,version,manifest,state) VALUES(?1,?2,?3,?4,?5,'pending')", params![owner,signer.0,m.key.file_id,m.key.version,payload])?;
+            tx.execute("INSERT INTO files(storage_user_id,origin_principal,file_id,version,manifest,state) VALUES(?1,?2,?3,?4,?5,'pending')", params![owner,signer.0,m.key.file_id,m.key.version,payload])?;
         }
     }
     tx.execute("INSERT INTO file_share_grants(storage_user_id,origin_principal,file_id,version,recipient_principal,chat_id,revision,state,expires_at,manifest,source_node,proof) VALUES(?1,?2,?3,?4,?5,?6,?7,'offered',?8,?9,?10,?11) ON CONFLICT(storage_user_id,origin_principal,file_id,version,recipient_principal,chat_id) DO UPDATE SET revision=excluded.revision,state=CASE WHEN file_share_grants.state='accepted' THEN 'accepted' ELSE 'offered' END,expires_at=excluded.expires_at,manifest=excluded.manifest,source_node=excluded.source_node,proof=excluded.proof", params![owner,signer.0,m.key.file_id,m.key.version,recipient.0,offer.chat_id,offer.grant_revision,offer.expires_at,payload,source_node,encode(offer)?])?;
@@ -155,13 +170,13 @@ pub(crate) fn retire_replica_in_tx(
     let origin = stored_handle_on(tx, &key.origin)?;
     let allowed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM file_share_grants WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND state='accepted' AND expires_at>?5)", params![owner,origin,key.file_id,key.version,sync::now_millis()], |r| r.get(0))?;
     if !allowed {
-        tx.execute("UPDATE user_assets SET deleted=1 WHERE user_id=?1 AND asset_id IN (SELECT j.asset_id FROM file_replication_jobs j JOIN file_versions v ON v.id=j.version_id WHERE v.storage_user_id=?1 AND v.origin_principal=?2 AND v.file_id=?3 AND v.version=?4) AND NOT EXISTS(SELECT 1 FROM file_versions v WHERE v.storage_user_id=?1 AND v.asset_id=user_assets.asset_id)",params![owner,origin,key.file_id,key.version])?;
-        tx.execute("DELETE FROM user_asset_uploads WHERE user_id=?1 AND state='uploading' AND upload_id IN (SELECT j.upload_id FROM file_replication_jobs j JOIN file_versions v ON v.id=j.version_id WHERE v.storage_user_id=?1 AND v.origin_principal=?2 AND v.file_id=?3 AND v.version=?4)",params![owner,origin,key.file_id,key.version])?;
-        tx.execute("DELETE FROM file_replication_jobs WHERE version_id IN (SELECT id FROM file_versions WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4)", params![owner,origin,key.file_id,key.version])?;
-        let asset: Option<String> = tx.query_row("SELECT asset_id FROM file_versions WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4", params![owner,origin,key.file_id,key.version], |r| r.get(0)).optional()?.flatten();
-        tx.execute("UPDATE file_versions SET asset_id=NULL,state='pending' WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4", params![owner,origin,key.file_id,key.version])?;
+        tx.execute("UPDATE user_assets SET deleted=1 WHERE user_id=?1 AND asset_id IN (SELECT j.asset_id FROM file_replication_jobs j JOIN files v ON v.id=j.file_row_id WHERE v.storage_user_id=?1 AND v.origin_principal=?2 AND v.file_id=?3 AND v.version=?4) AND NOT EXISTS(SELECT 1 FROM files v WHERE v.storage_user_id=?1 AND v.asset_id=user_assets.asset_id)",params![owner,origin,key.file_id,key.version])?;
+        tx.execute("DELETE FROM user_asset_uploads WHERE user_id=?1 AND state='uploading' AND upload_id IN (SELECT j.upload_id FROM file_replication_jobs j JOIN files v ON v.id=j.file_row_id WHERE v.storage_user_id=?1 AND v.origin_principal=?2 AND v.file_id=?3 AND v.version=?4)",params![owner,origin,key.file_id,key.version])?;
+        tx.execute("DELETE FROM file_replication_jobs WHERE file_row_id IN (SELECT id FROM files WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4)", params![owner,origin,key.file_id,key.version])?;
+        let asset: Option<String> = tx.query_row("SELECT asset_id FROM files WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4", params![owner,origin,key.file_id,key.version], |r| r.get(0)).optional()?.flatten();
+        tx.execute("UPDATE files SET asset_id=NULL,state='pending' WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4", params![owner,origin,key.file_id,key.version])?;
         if let Some(asset) = asset {
-            tx.execute("UPDATE user_assets SET deleted=1 WHERE user_id=?1 AND asset_id=?2 AND NOT EXISTS(SELECT 1 FROM file_versions WHERE storage_user_id=?1 AND asset_id=?2)", params![owner,asset])?;
+            tx.execute("UPDATE user_assets SET deleted=1 WHERE user_id=?1 AND asset_id=?2 AND NOT EXISTS(SELECT 1 FROM files WHERE storage_user_id=?1 AND asset_id=?2)", params![owner,asset])?;
         }
     }
     Ok(())

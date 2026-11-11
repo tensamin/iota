@@ -15,9 +15,9 @@ pub struct Job {
 pub fn accept(owner: i64, key: &FileKey) -> Result<(), StorageError> {
     let (manifest, existing, failed) = db::with_db(|conn| {
         sharing::require_grant_on(conn, owner, key, true)?;
-        let (id, m, _, state) = version_on(conn, owner, key)?;
+        let (id, m, _, state) = file_on(conn, owner, key)?;
         let existing: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM file_replication_jobs WHERE version_id=?1)",
+            "SELECT EXISTS(SELECT 1 FROM file_replication_jobs WHERE file_row_id=?1)",
             [id],
             |r| r.get(0),
         )?;
@@ -42,9 +42,9 @@ pub fn accept(owner: i64, key: &FileKey) -> Result<(), StorageError> {
     )?;
     let result = db::with_immediate_transaction(|tx| {
         sharing::require_grant_on(tx, owner, key, true)?;
-        let (id, _, _, _) = version_on(tx, owner, key)?;
+        let (id, _, _, _) = file_on(tx, owner, key)?;
         let origin = handle_on(tx, &key.origin)?;
-        let inserted = tx.execute("INSERT OR IGNORE INTO file_replication_jobs(version_id,upload_id,asset_id) VALUES(?1,?2,?3)",params![id,upload,asset])?;
+        let inserted = tx.execute("INSERT OR IGNORE INTO file_replication_jobs(file_row_id,upload_id,asset_id) VALUES(?1,?2,?3)",params![id,upload,asset])?;
         if inserted == 0 {
             return Ok(false);
         }
@@ -53,10 +53,7 @@ pub fn accept(owner: i64, key: &FileKey) -> Result<(), StorageError> {
             params![owner, asset],
         )?;
         tx.execute("UPDATE file_share_grants SET state='accepted' WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND state IN ('offered','rejected') AND expires_at>?5",params![owner,origin,key.file_id,key.version,sync::now_millis()])?;
-        tx.execute(
-            "UPDATE file_versions SET state='transferring' WHERE id=?1",
-            [id],
-        )?;
+        tx.execute("UPDATE files SET state='transferring' WHERE id=?1", [id])?;
         change(tx, owner, "replica_transferring", key)?;
         Ok(true)
     });
@@ -69,10 +66,10 @@ pub fn accept(owner: i64, key: &FileKey) -> Result<(), StorageError> {
 pub fn cancel(owner: i64, key: &FileKey) -> Result<(), StorageError> {
     let uploads = db::with_immediate_transaction(|tx| {
         sharing::require_grant_on(tx, owner, key, true)?;
-        let (id, _, _, _) = version_on(tx, owner, key)?;
+        let (id, _, _, _) = file_on(tx, owner, key)?;
         let upload: Option<String> = tx
             .query_row(
-                "SELECT upload_id FROM file_replication_jobs WHERE version_id=?1",
+                "SELECT upload_id FROM file_replication_jobs WHERE file_row_id=?1",
                 [id],
                 |r| r.get(0),
             )
@@ -90,7 +87,7 @@ pub fn cancel(owner: i64, key: &FileKey) -> Result<(), StorageError> {
 
 pub fn jobs(source_node: Option<&str>) -> Result<Vec<Job>, StorageError> {
     db::with_db(|conn| {
-        let mut stmt = conn.prepare("SELECT v.id,v.storage_user_id,v.manifest,j.upload_id,j.asset_id,g.source_node,g.chat_id,g.revision FROM file_replication_jobs j JOIN file_versions v ON v.id=j.version_id JOIN file_share_grants g ON g.storage_user_id=v.storage_user_id AND g.origin_principal=v.origin_principal AND g.file_id=v.file_id AND g.version=v.version JOIN hosted_principals h ON h.local_user_id=v.storage_user_id AND h.principal_handle=g.recipient_principal WHERE g.state='accepted' AND g.expires_at>?1 AND j.next_attempt_at<=?1 AND (?2 IS NULL OR g.source_node=?2) GROUP BY v.id ORDER BY j.next_attempt_at,v.id LIMIT 8")?;
+        let mut stmt = conn.prepare("SELECT v.id,v.storage_user_id,v.manifest,j.upload_id,j.asset_id,g.source_node,g.chat_id,g.revision FROM file_replication_jobs j JOIN files v ON v.id=j.file_row_id JOIN file_share_grants g ON g.storage_user_id=v.storage_user_id AND g.origin_principal=v.origin_principal AND g.file_id=v.file_id AND g.version=v.version JOIN hosted_principals h ON h.local_user_id=v.storage_user_id AND h.principal_handle=g.recipient_principal WHERE g.state='accepted' AND g.expires_at>?1 AND j.next_attempt_at<=?1 AND (?2 IS NULL OR g.source_node=?2) GROUP BY v.id ORDER BY j.next_attempt_at,v.id LIMIT 8")?;
         let rows = stmt.query_map(params![sync::now_millis(), source_node], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -150,7 +147,7 @@ pub fn copy_local_batch(job: &Job, cancelled: impl Fn() -> bool) -> Result<(), S
 pub fn progress(job: &Job) -> Result<i64, StorageError> {
     db::with_db(|conn| {
         sharing::require_recipient_on(conn, job.owner, &job.manifest.key)?;
-        let valid: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM file_replication_jobs WHERE version_id=?1 AND upload_id=?2)",params![job.id,job.upload_id],|r|r.get(0))?;
+        let valid: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM file_replication_jobs WHERE file_row_id=?1 AND upload_id=?2)",params![job.id,job.upload_id],|r|r.get(0))?;
         check(valid)
     })?;
     let m = &job.manifest;
@@ -166,10 +163,10 @@ pub fn progress(job: &Job) -> Result<i64, StorageError> {
     .offset;
     let result = db::with_immediate_transaction(|tx| {
         sharing::require_recipient_on(tx, job.owner, &job.manifest.key)?;
-        let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM file_replication_jobs WHERE version_id=?1 AND upload_id=?2)",params![job.id,job.upload_id],|r|r.get(0))?;
+        let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM file_replication_jobs WHERE file_row_id=?1 AND upload_id=?2)",params![job.id,job.upload_id],|r|r.get(0))?;
         check(valid)?;
         let changed = tx.execute(
-            "UPDATE file_versions SET state='transferring' WHERE id=?1 AND state='failed'",
+            "UPDATE files SET state='transferring' WHERE id=?1 AND state='failed'",
             [job.id],
         )?;
         if changed != 0 {
@@ -194,7 +191,7 @@ pub fn complete(job: &Job) -> Result<(), StorageError> {
     let (asset, _) = user_assets::commit(job.owner, &job.upload_id)?;
     db::with_immediate_transaction(|tx| {
         sharing::require_recipient_on(tx, job.owner, &job.manifest.key)?;
-        let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM file_replication_jobs WHERE version_id=?1 AND upload_id=?2)",params![job.id,job.upload_id],|r|r.get(0))?;
+        let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM file_replication_jobs WHERE file_row_id=?1 AND upload_id=?2)",params![job.id,job.upload_id],|r|r.get(0))?;
         check(
             valid
                 && asset.size == job.manifest.ciphertext_size
@@ -203,11 +200,11 @@ pub fn complete(job: &Job) -> Result<(), StorageError> {
         let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM user_assets WHERE user_id=?1 AND asset_id=?2 AND deleted=0 AND sha256=?3)",params![job.owner,asset.asset_id,asset.sha256],|r|r.get(0))?;
         check(exists)?;
         tx.execute(
-            "UPDATE file_versions SET asset_id=?2,state='ready' WHERE id=?1",
+            "UPDATE files SET asset_id=?2,state='ready' WHERE id=?1",
             params![job.id, asset.asset_id],
         )?;
         tx.execute(
-            "DELETE FROM file_replication_jobs WHERE version_id=?1",
+            "DELETE FROM file_replication_jobs WHERE file_row_id=?1",
             [job.id],
         )?;
         change(tx, job.owner, "replica_ready", &job.manifest.key)
@@ -216,12 +213,9 @@ pub fn complete(job: &Job) -> Result<(), StorageError> {
 
 pub fn failed(job: &Job) -> Result<(), StorageError> {
     db::with_immediate_transaction(|tx| {
-        let changed = tx.execute("UPDATE file_replication_jobs SET attempts=MIN(attempts+1,30),next_attempt_at=?2+MIN(300000,1000*(1<<MIN(attempts,8))),last_error='transfer_unavailable' WHERE version_id=?1 AND upload_id=?3",params![job.id,sync::now_millis(),job.upload_id])?;
+        let changed = tx.execute("UPDATE file_replication_jobs SET attempts=MIN(attempts+1,30),next_attempt_at=?2+MIN(300000,1000*(1<<MIN(attempts,8))),last_error='transfer_unavailable' WHERE file_row_id=?1 AND upload_id=?3",params![job.id,sync::now_millis(),job.upload_id])?;
         if changed != 0 {
-            tx.execute(
-                "UPDATE file_versions SET state='failed' WHERE id=?1",
-                [job.id],
-            )?;
+            tx.execute("UPDATE files SET state='failed' WHERE id=?1", [job.id])?;
             change(tx, job.owner, "replica_failed", &job.manifest.key)?;
         }
         Ok(())
@@ -253,7 +247,7 @@ pub fn read(request: &ReplicaRead, peer_node: Option<&str>) -> Result<Vec<u8>, S
         if !allowed {
             return Err(StorageError::MessageUnauthorized);
         }
-        let (_, _, asset, state) = version_on(conn, owner, &request.key)?;
+        let (_, _, asset, state) = file_on(conn, owner, &request.key)?;
         check(state == "ready")?;
         let day = sync::now_millis() / (24 * 60 * 60 * 1000);
         let usage: Option<(i64,i64)> = conn.query_row("SELECT day,bytes FROM file_transfer_usage WHERE storage_user_id=?1 AND recipient_principal=?2",params![owner,recipient],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
