@@ -374,6 +374,12 @@ fn expected_response(expected: Option<CommunicationType>, response: &Communicati
                 Some(CommunicationType::AccountStateRequest),
                 Some(CommunicationType::AccountStateSnapshot)
             ) | (
+                Some(CommunicationType::AttachUserBegin),
+                Some(CommunicationType::AttachUserChallenge)
+            ) | (
+                Some(CommunicationType::DeleteUserCredentialBegin),
+                Some(CommunicationType::DeleteUserCredentialChallenge)
+            ) | (
                 Some(CommunicationType::GetChatSecret),
                 Some(CommunicationType::ChatSecretResponse)
             ) | (
