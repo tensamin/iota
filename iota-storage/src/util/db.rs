@@ -13,9 +13,8 @@ use std::time::Duration;
 use crate::storage_error::StorageError;
 
 const DB_NAME: &str = "messages";
-// ITO2 is migrated transactionally to ITO3; older binaries reject the new marker instead of rewriting it.
+// Only the current schema is supported; incompatible development stores must be recreated explicitly.
 const STORAGE_FORMAT: i64 = 0x49544F33;
-const LEGACY_STORAGE_FORMAT: i64 = 0x49544F32;
 
 /// A simple r2d2 manager for rusqlite connections.
 pub struct SqliteManager {
@@ -70,25 +69,7 @@ fn create_pool_with_timeout(
 pub(crate) fn initialize_schema(connection: &Connection) -> Result<(), StorageError> {
     verify_storage_format(connection)?;
     let transaction = connection.unchecked_transaction()?;
-    let legacy_files: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='file_versions')",
-        [],
-        |row| row.get(0),
-    )?;
-    if legacy_files {
-        transaction.execute_batch(
-            "ALTER TABLE file_versions RENAME TO files; ALTER TABLE file_replication_jobs RENAME COLUMN version_id TO file_row_id;",
-        )?;
-    }
     transaction.execute_batch(include_str!("../../migrations/0001_initial.sql"))?;
-    transaction.execute_batch(include_str!(
-        "../../migrations/0002_remove_connected_apps.sql"
-    ))?;
-    if legacy_files {
-        transaction.execute_batch(include_str!(
-            "../../migrations/0003_single_file_storage.sql"
-        ))?;
-    }
     transaction.pragma_update(None, "application_id", STORAGE_FORMAT)?;
     transaction.commit()?;
     Ok(())
@@ -101,9 +82,9 @@ fn verify_storage_format(connection: &Connection) -> Result<(), StorageError> {
         [],
         |row| row.get(0),
     )?;
-    if format != STORAGE_FORMAT && format != LEGACY_STORAGE_FORMAT && (format != 0 || populated) {
+    if format != STORAGE_FORMAT && (format != 0 || populated) {
         return Err(StorageError::Other(
-            "incompatible storage format; use a matching binary or restore a compatible backup"
+            "incompatible storage format; use a matching binary or explicitly recreate this development database"
                 .into(),
         ));
     }
