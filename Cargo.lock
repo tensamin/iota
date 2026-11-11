@@ -2249,7 +2249,6 @@ dependencies = [
 name = "iota"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "clap",
  "iota-cli",
  "iota-core",
@@ -2557,7 +2556,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "sysinfo",
  "tau",
  "tempfile",
@@ -4951,7 +4949,7 @@ dependencies = [
 [[package]]
 name = "tau"
 version = "0.1.0"
-source = "git+https://github.com/TensaminDev/Tau.git?rev=bbe79b55b6b5d98c4b17265bb5ed210a1769bccd#bbe79b55b6b5d98c4b17265bb5ed210a1769bccd"
+source = "git+https://github.com/TensaminDev/Tau.git?rev=660587c62f53095bcb9d5cf0459a427e19d4eadd#660587c62f53095bcb9d5cf0459a427e19d4eadd"
 dependencies = [
  "dashmap",
  "libc",
@@ -4968,7 +4966,7 @@ dependencies = [
 [[package]]
 name = "tau-relay-protocol"
 version = "0.1.0"
-source = "git+https://github.com/TensaminDev/Tau.git?rev=bbe79b55b6b5d98c4b17265bb5ed210a1769bccd#bbe79b55b6b5d98c4b17265bb5ed210a1769bccd"
+source = "git+https://github.com/TensaminDev/Tau.git?rev=660587c62f53095bcb9d5cf0459a427e19d4eadd#660587c62f53095bcb9d5cf0459a427e19d4eadd"
 dependencies = [
  "base64 0.22.1",
  "mtp",

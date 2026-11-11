@@ -22,7 +22,7 @@ mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "eef7562be64e77d8c29b
 ] }
 
 dashmap = "6.2.1"
-tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "bbe79b55b6b5d98c4b17265bb5ed210a1769bccd" }
+tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "660587c62f53095bcb9d5cf0459a427e19d4eadd" }
 hex = "0.4"
 json = "*"
 reqwest = "0.13.2"
