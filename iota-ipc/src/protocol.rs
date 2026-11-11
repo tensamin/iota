@@ -288,10 +288,6 @@ pub struct ResponseEnvelope {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "keep IPC response payloads inline"
-)]
 pub enum ResponseResult {
     Ok(ResponsePayload),
     Error(IpcErrorCode),

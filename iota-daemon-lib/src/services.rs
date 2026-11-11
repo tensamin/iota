@@ -273,7 +273,11 @@ impl DaemonServices {
         let relay = Arc::new(relay);
         Self::compose_with_sessions(
             DaemonServiceComponents {
-                accounts: Arc::new(OmegaAccountAuthority::new(client.clone())),
+                accounts: Arc::new(OmegaAccountAuthority::new(
+                    client.clone(),
+                    authority,
+                    identities.clone(),
+                )),
                 identities,
                 principals,
                 local_users,
