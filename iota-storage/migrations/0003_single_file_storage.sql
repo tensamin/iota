@@ -17,26 +17,6 @@ WHERE EXISTS (
       AND current.file_id = old.file_id AND current.version > old.version
 );
 
-DELETE FROM file_share_grants AS grant
-WHERE grant.state != 'revoked' AND (EXISTS (
-    SELECT 1 FROM files file
-    WHERE file.storage_user_id = grant.storage_user_id
-      AND file.origin_principal = grant.origin_principal
-      AND file.file_id = grant.file_id AND file.version != grant.version
-)
-OR (
-    NOT EXISTS (
-        SELECT 1 FROM files file
-        WHERE file.storage_user_id = grant.storage_user_id
-          AND file.origin_principal = grant.origin_principal AND file.file_id = grant.file_id
-    )
-    AND grant.version < (
-        SELECT MAX(current.version) FROM file_share_grants current
-        WHERE current.storage_user_id = grant.storage_user_id
-          AND current.origin_principal = grant.origin_principal AND current.file_id = grant.file_id
-    )
-));
-
 DELETE FROM file_changes
 WHERE COALESCE(json_extract(payload, '$.key'), json_extract(payload, '$.manifest.key')) IS NOT NULL
   AND NOT EXISTS (

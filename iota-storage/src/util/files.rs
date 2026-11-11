@@ -458,7 +458,8 @@ fn shares_page(conn: &Connection, owner: i64, page: &ListPage) -> Result<Value, 
     let own = owner_principal_on(conn, owner)?;
     let origin = page.origin.as_ref().unwrap_or(&own);
     let origin_handle = handle_on(conn, origin)?;
-    let mut statement = conn.prepare("SELECT g.id,g.version,g.chat_id,g.revision,g.state,g.expires_at,p.authority_id,p.remote_user_id FROM file_share_grants g JOIN principals p ON p.principal_pk=g.recipient_principal JOIN files file ON file.storage_user_id=g.storage_user_id AND file.origin_principal=g.origin_principal AND file.file_id=g.file_id AND file.version=g.version WHERE g.storage_user_id=?1 AND g.file_id=?2 AND g.origin_principal=?3 AND g.id>?4 ORDER BY g.id LIMIT ?5")?;
+    // Outstanding grants remain revocable even after their ciphertext is retired.
+    let mut statement = conn.prepare("SELECT g.id,g.version,g.chat_id,g.revision,g.state,g.expires_at,p.authority_id,p.remote_user_id FROM file_share_grants g JOIN principals p ON p.principal_pk=g.recipient_principal WHERE g.storage_user_id=?1 AND g.file_id=?2 AND g.origin_principal=?3 AND g.id>?4 ORDER BY g.id LIMIT ?5")?;
     let mut items = Vec::new();
     let mut bytes = encode(&json!({"items":[],"next":i64::MAX}))?.len();
     let mut next = page.after;
