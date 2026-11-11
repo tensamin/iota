@@ -43,8 +43,8 @@ pub fn handle_file_request(cv: &CommunicationValue) -> CommunicationValue {
             Some(CommunicationType::FilePlacementDelete) => {
                 files::entry_delete(owner, &payload::<DeleteEntry>(cv)?, false)?
             }
-            Some(CommunicationType::FileVersionPublish) => {
-                files::publish(owner, &payload::<PublishVersion>(cv)?)?
+            Some(CommunicationType::FilePublish) => {
+                files::publish(owner, &payload::<PublishFile>(cv)?)?
             }
             Some(CommunicationType::FileListPage) => {
                 return files::list_page(owner, &payload::<ListPage>(cv)?);
@@ -116,7 +116,7 @@ pub fn handle_file_storage_request(cv: &CommunicationValue) -> Option<Vec<Commun
         | CommunicationType::FileFolderDelete
         | CommunicationType::FilePlacementPut
         | CommunicationType::FilePlacementDelete
-        | CommunicationType::FileVersionPublish
+        | CommunicationType::FilePublish
         | CommunicationType::FileListPage
         | CommunicationType::FileGetManifest
         | CommunicationType::FileDelete

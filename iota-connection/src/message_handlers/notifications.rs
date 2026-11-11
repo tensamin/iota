@@ -1,3 +1,4 @@
+use super::messages::canonical_principal_value;
 use super::*;
 
 pub(super) fn notification_response(
@@ -5,10 +6,12 @@ pub(super) fn notification_response(
     request: &CommunicationValue,
     owner: i64,
     contact: &iota_storage::users::contact::Contact,
+    principal: &DataValue,
 ) -> CommunicationValue {
     let mut response = CommunicationValue::new(ty)
         .with_request_id(request)
         .with_receiver(sender_wire_id(owner))
+        .add_typed_default(DataType::Principal, principal.clone())
         .add_typed_default(
             DataType::ChatPartnerId,
             DataValue::SignedNumber(
@@ -66,6 +69,15 @@ pub fn handle_read_notification(cv: &CommunicationValue) -> NotificationMutation
             changed: None,
         };
     };
+    let principal_value = match canonical_principal_value(principal) {
+        Ok(value) => value,
+        Err(_) => {
+            return NotificationMutation {
+                response: error_response(cv, CommunicationType::ErrorInternal),
+                changed: None,
+            };
+        }
+    };
 
     match chats_util::read_notifications(owner, principal, through) {
         Ok(Some(contact)) => NotificationMutation {
@@ -74,10 +86,17 @@ pub fn handle_read_notification(cv: &CommunicationValue) -> NotificationMutation
                 cv,
                 owner,
                 &contact,
+                &principal_value,
             ),
             changed: Some(
-                notification_response(CommunicationType::PushNotification, cv, owner, &contact)
-                    .with_id(next_notification_id()),
+                notification_response(
+                    CommunicationType::PushNotification,
+                    cv,
+                    owner,
+                    &contact,
+                    &principal_value,
+                )
+                .with_id(next_notification_id()),
             ),
         },
         Ok(None) => NotificationMutation {

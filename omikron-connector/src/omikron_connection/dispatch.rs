@@ -80,7 +80,6 @@ impl OmikronConnection {
 
         dispatch!(UserResolve, handle_user_resolve);
         dispatch!(GetChatSecret, handle_get_chat_secret);
-        dispatch!(TAuthAuthorize, handle_tauth_authorize);
         dispatch!(PasswordEnrollmentStart, handle_password_enrollment_start);
         dispatch!(ProvisioningCancel, handle_password_provisioning_abort);
         dispatch!(PasswordEnrollmentFinish, handle_password_enrollment_finish);
@@ -97,17 +96,6 @@ impl OmikronConnection {
             PasswordProvisioningFinish,
             handle_password_provisioning_finish
         );
-        dispatch!(TAuthExchangeCode, handle_tauth_exchange_code);
-        dispatch!(TAuthUser, handle_tauth_user);
-        dispatch!(TAuthContacts, handle_tauth_contacts);
-        dispatch!(TAuthPublicLookup, handle_tauth_public_lookup);
-        dispatch!(TAuthMetadataGet, handle_tauth_metadata_get);
-        dispatch!(TAuthMetadataSet, handle_tauth_metadata_set);
-        dispatch!(TAuthMetadataDelete, handle_tauth_metadata_delete);
-        dispatch!(TAuthDisconnectDelete, handle_tauth_disconnect_delete);
-        dispatch!(TAuthGrantList, handle_tauth_grant_list);
-        dispatch!(TAuthGrantRevoke, handle_tauth_grant_revoke);
-        dispatch!(TAuthGrantMetadataSet, handle_tauth_grant_metadata_set);
         dispatch!(AccountStateRequest, handle_account_state_request);
         dispatch!(RelayReceiptPage, handle_relay_receipt_page);
         dispatch!(AccountStateApplied, handle_account_state_applied);
@@ -152,7 +140,7 @@ impl OmikronConnection {
         dispatch!(FileFolderDelete, handle_file_request);
         dispatch!(FilePlacementPut, handle_file_request);
         dispatch!(FilePlacementDelete, handle_file_request);
-        dispatch!(FileVersionPublish, handle_file_request);
+        dispatch!(FilePublish, handle_file_request);
         dispatch!(FileListPage, handle_file_request);
         dispatch!(FileGetManifest, handle_file_request);
         dispatch!(FileDelete, handle_file_request);

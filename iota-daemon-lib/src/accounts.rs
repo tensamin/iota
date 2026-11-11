@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use iota_identity::{
-    AuthorityKind, LocalNodeIdentity, LocalUserDescriptor, LocalUserId, PrincipalHome,
+    AuthorityId, AuthorityKind, IdentityResolver, LocalNodeIdentity, LocalUserDescriptor,
+    LocalUserId, PrincipalHome, PrincipalId,
 };
 use iota_storage::users::pending_operations::{
     self, PendingUserOperation, PendingUserOperationKind, PendingUserOperationPhase,
@@ -73,6 +74,8 @@ pub trait AccountAuthority: Send + Sync {
 
 pub struct OmegaAccountAuthority {
     client: Arc<dyn OmikronClient>,
+    authority: AuthorityId,
+    identities: Arc<dyn IdentityResolver>,
 }
 
 pub struct LocalIotaAccountAuthority {
@@ -269,8 +272,38 @@ fn valid_username(username: &str) -> bool {
 }
 
 impl OmegaAccountAuthority {
-    pub fn new(client: Arc<dyn OmikronClient>) -> Self {
-        Self { client }
+    pub fn new(
+        client: Arc<dyn OmikronClient>,
+        authority: AuthorityId,
+        identities: Arc<dyn IdentityResolver>,
+    ) -> Self {
+        Self {
+            client,
+            authority,
+            identities,
+        }
+    }
+
+    async fn verify_hosted_account(&self, user: LocalUserId) -> Result<(), AccountError> {
+        let principal = PrincipalId {
+            authority: self.authority.clone(),
+            user_id: u64::try_from(user.0)
+                .map_err(|_| AccountError::InvalidRequest("invalid user ID".into()))?,
+        };
+        let resolved = self
+            .identities
+            .resolve_current_principal(&principal)
+            .await
+            .map_err(|error| AccountError::Unavailable(error.to_string()))?;
+        let binding = iota_storage::identity::SqlitePrincipalStore
+            .principal_for_local_user(user)
+            .map_err(|error| AccountError::Storage(error.to_string()))?;
+        if binding != Some(resolved.handle) {
+            return Err(AccountError::Unauthorized(
+                "Omega did not confirm this account's local hosting".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -281,13 +314,16 @@ impl AccountAuthority for OmegaAccountAuthority {
     }
 
     async fn create_user(&self, request: CreateUserRequest) -> Result<LocalAccount, AccountError> {
-        omikron_connector::user_ops::create_user(self.client.as_ref(), &request.username)
-            .await
-            .map(|user| LocalAccount {
-                user: LocalUserId(user.user_id),
-                username: user.username,
-            })
-            .map_err(map_create_error)
+        let user =
+            omikron_connector::user_ops::create_user(self.client.as_ref(), &request.username)
+                .await
+                .map_err(map_create_error)?;
+        self.verify_hosted_account(LocalUserId(user.user_id))
+            .await?;
+        Ok(LocalAccount {
+            user: LocalUserId(user.user_id),
+            username: user.username,
+        })
     }
 
     async fn inspect_credential(
@@ -309,13 +345,16 @@ impl AccountAuthority for OmegaAccountAuthority {
     async fn attach_user(&self, credential: &[u8]) -> Result<LocalAccount, AccountError> {
         let credential = std::str::from_utf8(credential)
             .map_err(|_| AccountError::InvalidRequest("credential is not UTF-8".into()))?;
-        omikron_connector::user_ops::attach_user_from_tu(self.client.as_ref(), credential)
-            .await
-            .map(|user| LocalAccount {
-                user: LocalUserId(user.user_id),
-                username: user.username,
-            })
-            .map_err(map_lifecycle_error)
+        let user =
+            omikron_connector::user_ops::attach_user_from_tu(self.client.as_ref(), credential)
+                .await
+                .map_err(map_lifecycle_error)?;
+        self.verify_hosted_account(LocalUserId(user.user_id))
+            .await?;
+        Ok(LocalAccount {
+            user: LocalUserId(user.user_id),
+            username: user.username,
+        })
     }
 
     async fn reconcile_user(&self, user: LocalUserId) -> Result<ReconcileResult, AccountError> {
@@ -335,6 +374,9 @@ impl AccountAuthority for OmegaAccountAuthority {
         if released_locally {
             user_manager::finalize_local_release(user.0, Some(&residency.username))
                 .map_err(|error| AccountError::Storage(error.to_string()))?;
+        }
+        if residency.state == user_manager::LocalUserState::Managed && !released_locally {
+            self.verify_hosted_account(user).await?;
         }
         Ok(ReconcileResult {
             remote_iota_id,

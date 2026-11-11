@@ -1,5 +1,5 @@
 use iota_identity::{LocalUserId, PrincipalStore};
-use mtp::codec::{CommunicationValue, DataType, DataValue, TypeMap};
+use mtp::codec::{CommunicationValue, TypeMap};
 
 pub fn snapshot(owner: i64, id: u32) -> CommunicationValue {
     let store = iota_storage::identity::SqlitePrincipalStore;
@@ -23,25 +23,19 @@ pub fn snapshot(owner: i64, id: u32) -> CommunicationValue {
                 device_id: uuid::Uuid::new_v4().to_string(),
                 authorization_generation: generation,
                 schema: tau::sync::SCHEMA.into(),
-                dictionary: tau::relay_protocol::dictionary_fingerprint("1.0").unwrap(),
+                dictionary: tau::relay_protocol::dictionary_fingerprint("1.3").unwrap(),
             },
             page: None,
             limit: 128,
         },
-        &TypeMap::new(mtp::type_map::Version(1, 0)),
+        &TypeMap::new(mtp::type_map::Version(1, 3)),
         id,
     )
     .unwrap()
 }
 
 pub fn acknowledge(snapshot: &CommunicationValue, id: u32) -> CommunicationValue {
-    let response: tau::sync::Response = serde_json::from_slice(
-        snapshot
-            .get_data(DataType::Json)
-            .and_then(DataValue::as_bytes_slice)
-            .unwrap(),
-    )
-    .unwrap();
+    let response = tau::sync::decode_response_body(snapshot).unwrap();
     let tau::sync::Response::Snapshot {
         scope,
         head,

@@ -7,12 +7,7 @@ pub(super) fn render_structured(
     payload: &ResponsePayload,
     output: OutputFormat,
 ) -> Result<(), StartupError> {
-    if matches!(
-        payload,
-        ResponsePayload::UserCredentialExport { .. }
-            | ResponsePayload::TAuthAppCreated { .. }
-            | ResponsePayload::TAuthAppCredentialExport { .. }
-    ) {
+    if matches!(payload, ResponsePayload::UserCredentialExport { .. }) {
         return Err(StartupError::Other(
             "Refusing to encode credential material as ordinary output.".into(),
         ));
@@ -103,31 +98,7 @@ pub(super) fn render_table(payload: &ResponsePayload) {
                 );
             }
         }
-        ResponsePayload::TAuthApps(apps) => {
-            if apps.is_empty() {
-                println!("No TAuth apps.");
-                return;
-            }
-            println!("{:<66} {:<28} MODE", "APP ID", "DOMAIN");
-            for app in apps {
-                println!(
-                    "{:<66} {:<28} {}",
-                    app.app_id, app.domain, app.connection_mode
-                );
-            }
-        }
-        ResponsePayload::TAuthApp(app) => {
-            println!("{:<18} {}", "App ID", app.app_id);
-            println!("{:<18} {}", "Domain", app.domain);
-            println!("{:<18} {}", "Owner user", app.owner_user_id);
-            println!("{:<18} {}", "Public key", app.public_key);
-            println!("{:<18} {}", "Mode", app.connection_mode);
-            println!("{:<18} {}", "Endpoint", app.endpoint_url);
-        }
-        ResponsePayload::TAuthAppCreated { .. }
-        | ResponsePayload::TAuthAppCredentialExport { .. } => {
-            println!("TAuth credential material withheld.");
-        }
+
         ResponsePayload::Tasks(tasks) => {
             if tasks.is_empty() {
                 println!("No active tasks.");
@@ -248,7 +219,6 @@ pub(super) fn render_table(payload: &ResponsePayload) {
             println!("{:<15} {:?}", "Local state", diagnostics.local_state);
             println!("{:<15} {}", "Hosted data", diagnostics.data_present);
             println!("{:<15} {:?}", "Credential", diagnostics.credential_status);
-            println!("{:<15} {}", "TAuth grants", diagnostics.tauth_grant_count);
         }
         ResponsePayload::UserCredentialExport { .. } => {
             println!("Credential export payload withheld.");
@@ -271,9 +241,6 @@ pub(super) fn render_table(payload: &ResponsePayload) {
                 println!("{:<15} {}", "Display Name", name);
             }
             println!("{:<15} {}", "Created At", user.created_at);
-            if !user.tauth_grants.is_empty() {
-                println!("{:<15} {}", "TAuth grants", user.tauth_grants.join(", "));
-            }
         }
     }
 }

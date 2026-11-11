@@ -4,13 +4,9 @@ use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
 use tau::sync::{Cursor, Request, Response};
 
 fn exchange(request: Request) -> Response {
-    let frame = CommunicationValue::new(CommunicationType::AccountStateRequest)
-        .with_sender(7)
-        .with_id(9)
-        .add_typed_default(
-            DataType::Json,
-            DataValue::Bytes(serde_json::to_vec(&request).unwrap()),
-        );
+    let frame = tau::sync::encode_request(&request, &mtp::codec::TypeMap::latest(), 9)
+        .unwrap()
+        .with_sender(7);
     tau::sync::decode_response(&handle_account_state_request(&frame), &frame).unwrap()
 }
 
@@ -42,7 +38,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
     .unwrap();
     let Response::Scope { scope } = exchange(Request::Discover {
         device_id: "renderer".into(),
-        dictionary: tau::relay_protocol::dictionary_fingerprint("1.0").unwrap(),
+        dictionary: tau::relay_protocol::dictionary_fingerprint("1.3").unwrap(),
     }) else {
         panic!("Expected authenticated scope");
     };

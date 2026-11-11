@@ -391,13 +391,9 @@ impl ClientConnectionManager {
                     break 'receive;
                 }
                 let acknowledged = scoped_ack
-                    && response
-                        .get_data(DataType::Json)
-                        .and_then(DataValue::as_bytes_slice)
-                        .and_then(|bytes| serde_json::from_slice::<tau::sync::Response>(bytes).ok())
-                        .is_some_and(|outcome| {
-                            matches!(outcome, tau::sync::Response::Acknowledged { .. })
-                        });
+                    && tau::sync::decode_response_body(&response).is_ok_and(|outcome| {
+                        matches!(outcome, tau::sync::Response::Acknowledged { .. })
+                    });
                 if account_applied && (response.is_type(CommunicationType::Success) || acknowledged)
                 {
                     active

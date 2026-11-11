@@ -136,11 +136,10 @@ pub(crate) async fn resolve_and_verify_native_for_ingress(
     let map = frame.type_map().ok_or_else(|| {
         IdentityError::InvalidDescriptor("missing native relay dictionary".into())
     })?;
-    // Keep the legacy 1.0 receiver contract; the 1.1 application profile uses
-    // the same dual-signature policy as current browser/native senders.
+    // Keep the legacy 1.0 receiver contract; later supported profiles require dual signatures.
     let policy = match map.version.to_string().as_str() {
         "1.0" => ProtectionPolicy::ed25519(),
-        "1.1" => ProtectionPolicy::dual(),
+        "1.1" | "1.2" | "1.3" => ProtectionPolicy::dual(),
         _ => {
             return Err(IdentityError::InvalidDescriptor(
                 "unsupported native relay dictionary".into(),

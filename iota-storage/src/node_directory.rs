@@ -59,7 +59,8 @@ impl SqliteNodeDirectory {
             .as_ref()
             .and_then(|current| current.valid_until)
             .is_none_or(|valid_until| valid_until <= now + DESCRIPTOR_RENEWAL_MILLIS);
-        let revision = current.as_ref().map_or(0, |current| {
+        // Recreating a message store must not restart a retained node identity's descriptor at revision zero.
+        let revision = current.as_ref().map_or(now, |current| {
             if fields_match && !renew {
                 current.descriptor_revision
             } else {

@@ -23,11 +23,6 @@ fn every_request_has_an_explicit_role_policy() {
         LocalRequest::ForceDetachUser { user_id: 1 },
         LocalRequest::ForgetReleasedUser { user_id: 1 },
         LocalRequest::GetUserDiagnostics { user_id: 1 },
-        LocalRequest::RevokeTAuthGrant {
-            user_id: 1,
-            app_id: "desktop".into(),
-        },
-        LocalRequest::RevokeAllTAuthGrants { user_id: 1 },
         LocalRequest::ExportUserCredential { user_id: 1 },
         LocalRequest::PurgeUserData { user_id: 1 },
         LocalRequest::ReleaseUser { user_id: 1 },
@@ -61,7 +56,7 @@ fn every_request_has_an_explicit_role_policy() {
         LocalRequest::ListCommunities,
     ];
 
-    assert_eq!(requests.len(), 33);
+    assert_eq!(requests.len(), 31);
     for request in requests {
         let required = request.required_role();
         assert!(IpcRole::Admin.allows(required));

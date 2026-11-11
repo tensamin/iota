@@ -45,23 +45,7 @@ pub enum LocalRequest {
     GetStatus,
     ListTasks,
     ListUsers,
-    ListTAuthApps,
-    GetTAuthApp {
-        app_id: String,
-    },
-    CreateTAuthApp {
-        owner_user_id: i64,
-        domain: String,
-        name: String,
-        redirects: Vec<String>,
-        connection: TAuthConnectionInput,
-    },
-    ExportTAuthApp {
-        app_id: String,
-    },
-    DeleteTAuthApp {
-        app_id: String,
-    },
+
     CreateInvitation {
         authority: InvitationAuthority,
         lifetime_seconds: u64,
@@ -96,13 +80,7 @@ pub enum LocalRequest {
     GetUserDiagnostics {
         user_id: i64,
     },
-    RevokeTAuthGrant {
-        user_id: i64,
-        app_id: String,
-    },
-    RevokeAllTAuthGrants {
-        user_id: i64,
-    },
+
     ExportUserCredential {
         user_id: i64,
     },
@@ -176,11 +154,7 @@ impl LocalRequest {
             Self::GetStatus => "get_status",
             Self::ListTasks => "list_tasks",
             Self::ListUsers => "list_users",
-            Self::ListTAuthApps => "list_tauth_apps",
-            Self::GetTAuthApp { .. } => "get_tauth_app",
-            Self::CreateTAuthApp { .. } => "create_tauth_app",
-            Self::ExportTAuthApp { .. } => "export_tauth_app",
-            Self::DeleteTAuthApp { .. } => "delete_tauth_app",
+
             Self::CreateInvitation { .. } => "create_invitation",
             Self::ListInvitations { .. } => "list_invitations",
             Self::RevokeInvitation { .. } => "revoke_invitation",
@@ -191,8 +165,7 @@ impl LocalRequest {
             Self::ForceDetachUser { .. } => "force_detach_user",
             Self::ForgetReleasedUser { .. } => "forget_released_user",
             Self::GetUserDiagnostics { .. } => "get_user_diagnostics",
-            Self::RevokeTAuthGrant { .. } => "revoke_tauth_grant",
-            Self::RevokeAllTAuthGrants { .. } => "revoke_all_tauth_grants",
+
             Self::ExportUserCredential { .. } => "export_user_credential",
             Self::PurgeUserData { .. } => "purge_user_data",
             Self::ReleaseUser { .. } => "release_user",
@@ -224,8 +197,6 @@ impl LocalRequest {
             Self::GetStatus
             | Self::ListTasks
             | Self::ListUsers
-            | Self::ListTAuthApps
-            | Self::GetTAuthApp { .. }
             | Self::ListInvitations { .. }
             | Self::GetDaemonStatus
             | Self::GetOmikronStatus
@@ -239,9 +210,6 @@ impl LocalRequest {
             Self::ReconnectOmikron | Self::ReloadConfig => IpcRole::Operate,
 
             Self::CreateUser { .. }
-            | Self::CreateTAuthApp { .. }
-            | Self::ExportTAuthApp { .. }
-            | Self::DeleteTAuthApp { .. }
             | Self::CreateInvitation { .. }
             | Self::RevokeInvitation { .. }
             | Self::InspectTuCredential { .. }
@@ -249,8 +217,6 @@ impl LocalRequest {
             | Self::ReconcileUser { .. }
             | Self::ForceDetachUser { .. }
             | Self::ForgetReleasedUser { .. }
-            | Self::RevokeTAuthGrant { .. }
-            | Self::RevokeAllTAuthGrants { .. }
             | Self::ExportUserCredential { .. }
             | Self::PurgeUserData { .. }
             | Self::ReleaseUser { .. }
@@ -322,10 +288,6 @@ pub struct ResponseEnvelope {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "keep IPC response payloads inline"
-)]
 pub enum ResponseResult {
     Ok(ResponsePayload),
     Error(IpcErrorCode),
@@ -337,18 +299,7 @@ pub enum ResponsePayload {
     Status(StatusResponse),
     Tasks(Vec<TaskSummary>),
     Users(Vec<UserSummary>),
-    TAuthApps(Vec<TAuthAppSummary>),
-    TAuthApp(TAuthAppSummary),
-    TAuthAppCreated {
-        app: TAuthAppSummary,
-        credential: SecretString,
-        txt_record: String,
-        manifest_template: String,
-    },
-    TAuthAppCredentialExport {
-        app_id: String,
-        credential: SecretString,
-    },
+
     InvitationCreated(InvitationCreated),
     Invitations(Vec<InvitationSummary>),
     InvitationUpdated(InvitationSummary),
@@ -395,29 +346,6 @@ pub struct OmikronStatusResponse {
     pub iota_id: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum TAuthConnectionInput {
-    Hosted {
-        omega_url: String,
-    },
-    ForcedOmikron {
-        omikron_url: String,
-        omikron_public_key: String,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct TAuthAppSummary {
-    pub app_id: String,
-    pub owner_user_id: i64,
-    pub domain: String,
-    pub public_key: String,
-    pub connection_mode: String,
-    pub endpoint_url: String,
-    pub created_at: i64,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ComponentStatusResponse {
     pub id: ComponentId,
@@ -431,7 +359,7 @@ pub struct UserDetailResponse {
     pub username: String,
     pub display_name: Option<String>,
     pub created_at: i64,
-    pub tauth_grants: Vec<String>,
+
     pub state: LocalUserState,
     pub data_present: bool,
     pub credential_status: CredentialStatus,
@@ -574,7 +502,7 @@ pub struct UserDiagnostics {
     pub local_state: LocalUserState,
     pub data_present: bool,
     pub credential_status: CredentialStatus,
-    pub tauth_grant_count: usize,
+
     pub pending_operation: Option<String>,
 }
 

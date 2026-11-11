@@ -17,6 +17,9 @@ architecture="$8"
 base_url="$(printf '%s' "$9" | sed 's#/$##')"
 output="${10}"
 repository_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ipc_source="$repository_directory/iota-ipc/src/lib.rs"
+ipc_min="$(sed -nE 's/^pub const MIN_PROTOCOL_VERSION: u16 = ([0-9]+);$/\1/p' "$ipc_source")"
+ipc_max="$(sed -nE 's/^pub const PROTOCOL_VERSION: u16 = ([0-9]+);$/\1/p' "$ipc_source")"
 contract="$repository_directory/iota-updater/artifacts.tsv"
 staging_directory="$(mktemp -d)"
 artifacts="$staging_directory/artifacts.jsonl"
@@ -67,6 +70,8 @@ jq -s \
     --arg published_at "$published_at" \
     --arg expires_at "$expires_at" \
     --arg release_signing_key_id "$signing_key_id" \
+    --argjson supported_ipc_min "$ipc_min" \
+    --argjson supported_ipc_max "$ipc_max" \
     '{
         product_version: $product_version,
         channel: $channel,
@@ -74,8 +79,8 @@ jq -s \
         published_at: $published_at,
         expires_at: $expires_at,
         minimum_data_schema: 1,
-        supported_ipc_min: 2,
-        supported_ipc_max: 4,
+        supported_ipc_min: $supported_ipc_min,
+        supported_ipc_max: $supported_ipc_max,
         artifacts: .,
         release_signing_key_id: $release_signing_key_id,
         rollback_compatible: true
