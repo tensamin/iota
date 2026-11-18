@@ -80,8 +80,10 @@
             pkgs.pkg-config
           ];
           buildInputs = [
+            pkgs.aws-lc
             pkgs.openssl
             pkgs.sqlite
+            pkgs.zstd
           ];
           dontUseCmakeConfigure = true;
           MTP_TYPE_MAPS = "${typeMaps}/type-maps.yaml";
@@ -130,9 +132,11 @@
             static.stdenv.cc
           ];
           buildInputs = [
+            (static.aws-lc.override { runCommand = pkgs.runCommandCC; })
             static.openssl
             static.sqlite
             static.zlib
+            static.zstd
           ];
           OPENSSL_STATIC = "1";
           SQLITE3_STATIC = "1";
@@ -185,11 +189,12 @@
           rawSource,
         }:
         pkgs.runCommand "iota-bundle" { } ''
-          mkdir -p "$out/bin" "$out/share/iota"
+          mkdir -p "$out/bin" "$out/share/iota/iota-ipc/src"
           cp -r ${package}/bin/. "$out/bin/"
           cp -r ${rawSource}/systemd "$out/share/iota/"
           cp -r ${source}/scripts "$out/share/iota/"
           cp ${rawSource}/iota-updater/artifacts.tsv "$out/share/iota/"
+          cp ${rawSource}/iota-ipc/src/lib.rs "$out/share/iota/iota-ipc/src/"
           cp -r ${package}/share/iota/web "$out/share/iota/static-web"
           cp ${source}/iota-installer/bundle-files.txt "$out/share/iota/"
         '';
