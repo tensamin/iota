@@ -36,7 +36,7 @@ pub fn fixture_path() -> &'static std::path::Path {
             return path.into();
         }
         use mtp::codec::relay::SealedRelayBuilder;
-        let map = TypeMap::new(mtp::type_map::Version(1, 0));
+        let map = TypeMap::new(mtp::type_map::Version(0, 4));
         let nodes = [Keyring::generate(), Keyring::generate()];
         let signer = Keyring::generate();
         let authority = AuthorityId::for_omega(&nodes[0].public_key_bundle()).unwrap();
@@ -86,10 +86,15 @@ pub fn fixture_path() -> &'static std::path::Path {
             signer: principals[0].clone(),
             recipient: principals[1].clone(),
             destination: destination.as_str().into(),
-            type_map_version: "1.0".into(),
+            type_map_version: "0.4".into(),
             type_map_fingerprint: map.fingerprint_hex().unwrap(),
         };
-        let signing = mtp::crypto::Ed25519Signer::new(&signer.sig_cl_secret_key).unwrap();
+        let signing = mtp::crypto::DualSigner::new(
+            &signer.sig_cl_secret_key,
+            &signer.sig_pq_secret_key,
+            &signer.sig_pq_public_key,
+        )
+        .unwrap();
         let keys = nodes.each_ref().map(Keyring::public_key_bundle).to_vec();
         let frame = SealedRelayBuilder::new(
             CommunicationType::SetChatSecret,
@@ -343,7 +348,7 @@ pub async fn run_native_stage() {
         .unwrap_or_else(|_| fixture["frame"].as_str().unwrap().to_owned());
     let frame = CommunicationValue::try_from_bytes_with(
         &STANDARD.decode(encoded).unwrap(),
-        &TypeMap::new(mtp::type_map::Version::parse("1.0").unwrap()),
+        &TypeMap::new(mtp::type_map::Version::parse("0.4").unwrap()),
     )
     .unwrap();
     let verified = service.prepare_relay(&source, frame.clone()).await.unwrap();
@@ -567,7 +572,7 @@ fn native_ack_binds_exact_ciphertext_and_dictionary_not_correlation_id() {
     use iota_connection::connection_handler::bind_relay_response_identity;
     let fixture = fixture();
     let bytes = STANDARD.decode(fixture["frame"].as_str().unwrap()).unwrap();
-    let map = TypeMap::new(mtp::type_map::Version::parse("1.0").unwrap());
+    let map = TypeMap::new(mtp::type_map::Version::parse("0.4").unwrap());
     let frame = CommunicationValue::try_from_bytes_with(&bytes, &map)
         .unwrap()
         .with_id(9);
@@ -680,7 +685,7 @@ async fn first_epoch_crash_recovery_rechecks_peer_authority() {
         .collect();
     let frame = CommunicationValue::try_from_bytes_with(
         &STANDARD.decode(fixture["frame"].as_str().unwrap()).unwrap(),
-        &TypeMap::new(mtp::type_map::Version::parse("1.0").unwrap()),
+        &TypeMap::new(mtp::type_map::Version::parse("0.4").unwrap()),
     )
     .unwrap();
     let signer_key =
@@ -690,7 +695,7 @@ async fn first_epoch_crash_recovery_rechecks_peer_authority() {
         &[&nodes[0].keyring()],
         Some(11),
         |_| Some(vec![signer_key]),
-        mtp::codec::relay::RelayOpenOptions::new(mtp::codec::ProtectionPolicy::ed25519()),
+        mtp::codec::relay::RelayOpenOptions::new(mtp::codec::ProtectionPolicy::dual()),
     )
     .unwrap();
     let status = std::process::Command::new(std::env::current_exe().unwrap())

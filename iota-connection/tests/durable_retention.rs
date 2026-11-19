@@ -38,7 +38,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
     .unwrap();
     let Response::Scope { scope } = exchange(Request::Discover {
         device_id: "renderer".into(),
-        dictionary: tau::relay_protocol::dictionary_fingerprint("1.3").unwrap(),
+        dictionary: tau::relay_protocol::dictionary_fingerprint("0.4").unwrap(),
     }) else {
         panic!("Expected authenticated scope");
     };
@@ -70,7 +70,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
                 [id],
                 |row| {
                     Ok((
-                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(0)?,
                         row.get::<_, bool>(1)?,
                         row.get::<_, bool>(2)?,
                     ))
@@ -81,7 +81,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
     };
     assert_eq!(
         retained(1),
-        ("AQ==".into(), false, false),
+        (Some("AQ==".into()), false, false),
         "Issuing a page is not durable application acknowledgement"
     );
     chat_files::apply_remote_edit_for_principal(
@@ -90,7 +90,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
         iota_identity::PrincipalHandle(102),
         20,
         8,
-        "Ag==",
+        chat_files::MessageBody::text("Ag=="),
     )
     .unwrap();
     let changed_head = sync::head(7).unwrap();
@@ -105,10 +105,10 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
         }),
         Response::Acknowledged { .. }
     ));
-    assert_eq!(retained(1), (String::new(), true, true));
+    assert_eq!(retained(1), (None, true, true));
     assert_eq!(
         retained(2),
-        ("Ag==".into(), false, false),
+        (Some("Ag==".into()), false, false),
         "An edit newer than the saved page must survive"
     );
     assert_eq!(
@@ -138,12 +138,12 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
         iota_identity::PrincipalHandle(102),
         10,
         8,
-        "Aw==",
+        chat_files::MessageBody::text("Aw=="),
     )
     .unwrap();
     assert_eq!(
         retained(1),
-        ("Aw==".into(), false, false),
+        (Some("Aw==".into()), false, false),
         "A valid edit restores the current body after delivery pruning"
     );
     assert!(matches!(
@@ -154,8 +154,8 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
         Response::Acknowledged { .. }
     ));
     assert_eq!(
-        retained(1).0,
-        "Aw==",
+        retained(1).0.as_deref(),
+        Some("Aw=="),
         "Replaying an old acknowledgement must not prune the new edit"
     );
     let Response::Delta {
@@ -181,9 +181,9 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
         }),
         Response::Acknowledged { .. }
     ));
-    assert_eq!(retained(1), (String::new(), true, true));
-    assert_eq!(retained(2), (String::new(), true, true));
-    assert_eq!(retained(3), (String::new(), true, true));
+    assert_eq!(retained(1), (None, true, true));
+    assert_eq!(retained(2), (None, true, true));
+    assert_eq!(retained(3), (None, true, true));
     let receipt = chat_files::record_message_receipt(
         7,
         7,
@@ -364,7 +364,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
         iota_identity::PrincipalHandle(102),
         40,
         8,
-        "BQ==",
+        chat_files::MessageBody::text("BQ=="),
     )
     .unwrap();
     db::with_immediate_transaction(|tx| {
@@ -397,7 +397,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
     ));
     assert_eq!(
         retained(4),
-        ("BQ==".into(), false, false),
+        (Some("BQ==".into()), false, false),
         "An old acknowledgement cannot prune an edit whose event was compacted"
     );
     let Response::Snapshot {
@@ -425,7 +425,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
     ));
     assert_eq!(
         retained(4),
-        (String::new(), true, true),
+        (None, true, true),
         "Pruning resumes once the actual current body has been applied"
     );
     std::fs::remove_dir_all(directory).unwrap();

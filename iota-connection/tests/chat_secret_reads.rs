@@ -59,8 +59,8 @@ fn canonical_reads_require_committed_owner_evidence_and_never_downgrade() {
         let original_frame = vec![version as u8, 2, 3];
         let format = recovery::RelayFormat::NativeMtpSealedV1;
         recovery::Escrow {
-            original_type_map_version: "1.0".into(),
-            original_type_map_fingerprint: tau_relay_protocol::dictionary_fingerprint("1.0")
+            original_type_map_version: "0.4".into(),
+            original_type_map_fingerprint: tau_relay_protocol::dictionary_fingerprint("0.4")
                 .unwrap(),
             first: fixture.ids[0].clone(),
             second: fixture.ids[1].clone(),

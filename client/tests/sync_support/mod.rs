@@ -23,12 +23,12 @@ pub fn snapshot(owner: i64, id: u32) -> CommunicationValue {
                 device_id: uuid::Uuid::new_v4().to_string(),
                 authorization_generation: generation,
                 schema: tau::sync::SCHEMA.into(),
-                dictionary: tau::relay_protocol::dictionary_fingerprint("1.3").unwrap(),
+                dictionary: tau::relay_protocol::dictionary_fingerprint("0.4").unwrap(),
             },
             page: None,
             limit: 128,
         },
-        &TypeMap::new(mtp::type_map::Version(1, 3)),
+        &TypeMap::new(mtp::type_map::Version(0, 4)),
         id,
     )
     .unwrap()

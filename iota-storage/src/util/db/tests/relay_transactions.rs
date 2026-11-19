@@ -24,7 +24,8 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
                 external_user: external,
                 external_principal: PrincipalHandle(principal),
                 sent_by_self,
-                content: "original",
+                content: Some("original"),
+                files: &[],
                 height: 0,
                 key_version: 1,
                 reply_to: None,
@@ -43,7 +44,15 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
              BEGIN SELECT RAISE(ABORT, 'injected destination failure'); END;",
     )?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    chat_files::edit_message_for_principal_in_tx(&tx, 7, 8, PrincipalHandle(71), 10, 7, "edited")?;
+    chat_files::edit_message_for_principal_in_tx(
+        &tx,
+        7,
+        8,
+        PrincipalHandle(71),
+        10,
+        7,
+        chat_files::MessageBody::text("edited"),
+    )?;
     assert!(
         chat_files::apply_remote_edit_for_principal_in_tx(
             &tx,
@@ -52,7 +61,7 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
             PrincipalHandle(70),
             10,
             7,
-            "edited"
+            chat_files::MessageBody::text("edited")
         )
         .is_err()
     );
@@ -77,7 +86,15 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
     );
     conn.execute_batch("DROP TRIGGER interrupt_destination;")?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    chat_files::edit_message_for_principal_in_tx(&tx, 7, 8, PrincipalHandle(71), 10, 7, "edited")?;
+    chat_files::edit_message_for_principal_in_tx(
+        &tx,
+        7,
+        8,
+        PrincipalHandle(71),
+        10,
+        7,
+        chat_files::MessageBody::text("edited"),
+    )?;
     chat_files::apply_remote_edit_for_principal_in_tx(
         &tx,
         8,
@@ -85,7 +102,7 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
         PrincipalHandle(70),
         10,
         7,
-        "edited",
+        chat_files::MessageBody::text("edited"),
     )?;
     chat_files::add_reaction_for_principal_in_tx(
         &tx,
@@ -161,7 +178,7 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
             PrincipalHandle(70),
             10,
             8,
-            "invalid"
+            chat_files::MessageBody::text("invalid")
         ),
         Err(StorageError::MessageUnauthorized)
     ));
@@ -173,7 +190,7 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
             PrincipalHandle(71),
             10,
             8,
-            "invalid"
+            chat_files::MessageBody::text("invalid")
         ),
         Err(StorageError::MessageUnauthorized)
     ));
@@ -275,7 +292,7 @@ fn queue_conflicts_and_exact_downstream_completion_preserve_relay_states()
                 destination_id: 8,
                 frame,
                 frame_id: 42,
-                type_map_version: "1.0",
+                type_map_version: "0.4",
             },
             100,
         )?
@@ -284,13 +301,13 @@ fn queue_conflicts_and_exact_downstream_completion_preserve_relay_states()
         };
         relay_replay::complete_application_in_tx(&tx, &claim)?;
         relay_replay::mark_queued_in_tx(&tx, claim.signer, message_id)?;
-        let id = relay_queue::enqueue_in_tx(&tx, target.clone(), &identity, frame, 20, 42, "1.0")?;
+        let id = relay_queue::enqueue_in_tx(&tx, target.clone(), &identity, frame, 20, 42, "0.4")?;
         assert_eq!(
-            relay_queue::enqueue_in_tx(&tx, target.clone(), &identity, frame, 30, 99, "1.0")?,
+            relay_queue::enqueue_in_tx(&tx, target.clone(), &identity, frame, 30, 99, "0.4")?,
             id
         );
         assert!(matches!(
-            relay_queue::enqueue_in_tx(&tx, target.clone(), &identity, b"changed", 20, 42, "1.0"),
+            relay_queue::enqueue_in_tx(&tx, target.clone(), &identity, b"changed", 20, 42, "0.4"),
             Err(StorageError::PendingRelayConflict)
         ));
         let record = tx.query_row(
@@ -425,7 +442,7 @@ fn secret_and_relay_completion_share_one_rollback_boundary() -> Result<(), Stora
             destination_id: 8,
             frame: b"secret",
             frame_id: 42,
-            type_map_version: "1.0",
+            type_map_version: "0.4",
         },
         100,
     )?

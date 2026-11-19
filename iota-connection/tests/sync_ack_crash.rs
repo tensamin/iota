@@ -38,7 +38,7 @@ fn sync_acknowledgments_commit_once_across_process_loss() {
             .0
             .auth_generation,
         schema: tau::sync::SCHEMA.into(),
-        dictionary: tau::relay_protocol::dictionary_fingerprint("1.0").unwrap(),
+        dictionary: tau::relay_protocol::dictionary_fingerprint("0.4").unwrap(),
     };
     let snapshot_request = Request::Snapshot {
         scope: scope.clone(),

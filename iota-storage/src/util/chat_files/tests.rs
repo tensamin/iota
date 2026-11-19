@@ -6,10 +6,10 @@ fn edit_fixture(conn: &Connection) -> Result<(), StorageError> {
     conn.execute_batch(
             "CREATE TABLE messages (id INTEGER PRIMARY KEY, storage_owner INTEGER,
                 external_user INTEGER, external_principal INTEGER, message_time INTEGER,
-                content TEXT, sent_by_self INTEGER, history_deleted INTEGER DEFAULT 0,
-                edited_count INTEGER DEFAULT 0, key_version INTEGER, delivery_pruned INTEGER DEFAULT 0, history_deleted_at INTEGER);
+                content TEXT, files TEXT NOT NULL DEFAULT '[]', sent_by_self INTEGER, history_deleted INTEGER DEFAULT 0,
+                edited_count INTEGER DEFAULT 0, key_version INTEGER, delivery_pruned INTEGER DEFAULT 0, history_deleted_at INTEGER, deleted_by_external INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE message_edits (message_id INTEGER, content_before TEXT,
-                 content_after TEXT, edited_at INTEGER, edited_by INTEGER,
+                 content_after TEXT, files_before TEXT, files_after TEXT, edited_at INTEGER, edited_by INTEGER,
                  content_before_key_version INTEGER, content_after_key_version INTEGER);
              CREATE TABLE sync_heads (user_id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
              CREATE TABLE sync_events (user_id INTEGER, version INTEGER, entity_type TEXT,
@@ -61,7 +61,7 @@ fn edit_epochs_update_ciphertext_metadata_history_and_sync_together() -> Result<
         PrincipalHandle(71),
         10,
         7,
-        "old-key edit",
+        MessageBody::text("old-key edit"),
         1,
     )?;
     require_edit_key_in_tx(&tx, 7, "principal:70:71", 2)?;
@@ -72,7 +72,7 @@ fn edit_epochs_update_ciphertext_metadata_history_and_sync_together() -> Result<
         PrincipalHandle(71),
         10,
         7,
-        "new-key edit",
+        MessageBody::text("new-key edit"),
         2,
     )?;
     apply_remote_edit_for_principal_versioned_in_tx(
@@ -82,11 +82,19 @@ fn edit_epochs_update_ciphertext_metadata_history_and_sync_together() -> Result<
         PrincipalHandle(70),
         10,
         7,
-        "old-key edit",
+        MessageBody::text("old-key edit"),
         1,
     )?;
     // Legacy callers do not declare a new epoch and preserve the current one.
-    edit_message_for_principal_in_tx(&tx, 7, 8, PrincipalHandle(71), 10, 7, "compatible edit")?;
+    edit_message_for_principal_in_tx(
+        &tx,
+        7,
+        8,
+        PrincipalHandle(71),
+        10,
+        7,
+        MessageBody::text("compatible edit"),
+    )?;
     tx.commit()?;
     assert_eq!(edit_state(&conn)?, ("compatible edit".into(), 2, 3, 4, 4));
     assert_eq!(
@@ -130,7 +138,16 @@ fn edit_sync_failure_rolls_back_both_copies_and_can_retry() -> Result<(), Storag
              BEGIN SELECT RAISE(ABORT, 'injected sync failure'); END;",
     )?;
     let tx = conn.transaction()?;
-    edit_message_for_principal_versioned_in_tx(&tx, 7, 8, PrincipalHandle(71), 10, 7, "edited", 1)?;
+    edit_message_for_principal_versioned_in_tx(
+        &tx,
+        7,
+        8,
+        PrincipalHandle(71),
+        10,
+        7,
+        MessageBody::text("edited"),
+        1,
+    )?;
     assert!(matches!(
         apply_remote_edit_for_principal_versioned_in_tx(
             &tx,
@@ -139,7 +156,7 @@ fn edit_sync_failure_rolls_back_both_copies_and_can_retry() -> Result<(), Storag
             PrincipalHandle(70),
             10,
             7,
-            "edited",
+            MessageBody::text("edited"),
             1,
         ),
         Err(StorageError::Db(_))
@@ -158,7 +175,16 @@ fn edit_sync_failure_rolls_back_both_copies_and_can_retry() -> Result<(), Storag
 
     conn.execute_batch("DROP TRIGGER fail_recipient_sync;")?;
     let tx = conn.transaction()?;
-    edit_message_for_principal_versioned_in_tx(&tx, 7, 8, PrincipalHandle(71), 10, 7, "edited", 1)?;
+    edit_message_for_principal_versioned_in_tx(
+        &tx,
+        7,
+        8,
+        PrincipalHandle(71),
+        10,
+        7,
+        MessageBody::text("edited"),
+        1,
+    )?;
     apply_remote_edit_for_principal_versioned_in_tx(
         &tx,
         8,
@@ -166,7 +192,7 @@ fn edit_sync_failure_rolls_back_both_copies_and_can_retry() -> Result<(), Storag
         PrincipalHandle(70),
         10,
         7,
-        "edited",
+        MessageBody::text("edited"),
         1,
     )?;
     tx.commit()?;
@@ -197,7 +223,7 @@ fn invalid_or_unauthorized_edits_do_not_change_history_or_sync() -> Result<(), S
                 PrincipalHandle(71),
                 10,
                 7,
-                "invalid",
+                MessageBody::text("invalid"),
                 version,
             ),
             Err(StorageError::InvalidRelayPayload(_))
@@ -211,7 +237,7 @@ fn invalid_or_unauthorized_edits_do_not_change_history_or_sync() -> Result<(), S
             PrincipalHandle(70),
             10,
             9,
-            "forged",
+            MessageBody::text("forged"),
             1,
         ),
         Err(StorageError::MessageUnauthorized)
@@ -224,7 +250,7 @@ fn invalid_or_unauthorized_edits_do_not_change_history_or_sync() -> Result<(), S
             PrincipalHandle(71),
             10,
             8,
-            "wrong direction",
+            MessageBody::text("wrong direction"),
             1,
         ),
         Err(StorageError::MessageUnauthorized)
@@ -237,7 +263,7 @@ fn invalid_or_unauthorized_edits_do_not_change_history_or_sync() -> Result<(), S
             PrincipalHandle(70),
             10,
             8,
-            "wrong direction",
+            MessageBody::text("wrong direction"),
             1,
         ),
         Err(StorageError::MessageUnauthorized)
@@ -250,7 +276,7 @@ fn invalid_or_unauthorized_edits_do_not_change_history_or_sync() -> Result<(), S
             PrincipalHandle(999),
             10,
             7,
-            "wrong authority",
+            MessageBody::text("wrong authority"),
             1,
         ),
         Err(StorageError::MissingRelayDependency)
@@ -263,7 +289,7 @@ fn invalid_or_unauthorized_edits_do_not_change_history_or_sync() -> Result<(), S
             PrincipalHandle(71),
             11,
             7,
-            "missing target",
+            MessageBody::text("missing target"),
             1,
         ),
         Err(StorageError::MissingRelayDependency)
@@ -301,7 +327,7 @@ fn missing_edit_epoch_can_recover_after_reopen_without_partial_mutation() -> Res
             PrincipalHandle(71),
             10,
             7,
-            "uncommitted",
+            MessageBody::text("uncommitted"),
             1,
         )?;
         // A failed second local effect must roll back key metadata and history too.
@@ -323,7 +349,7 @@ fn missing_edit_epoch_can_recover_after_reopen_without_partial_mutation() -> Res
         PrincipalHandle(71),
         10,
         7,
-        "recovered",
+        MessageBody::text("recovered"),
         3,
     )?;
     tx.commit()?;
@@ -345,7 +371,7 @@ fn versioned_edit_does_not_restore_removed_history() -> Result<(), StorageError>
         PrincipalHandle(71),
         10,
         7,
-        "restore",
+        MessageBody::text("restore"),
         1,
     )?;
     apply_remote_edit_for_principal_versioned_in_tx(
@@ -355,7 +381,7 @@ fn versioned_edit_does_not_restore_removed_history() -> Result<(), StorageError>
         PrincipalHandle(70),
         10,
         7,
-        "restore",
+        MessageBody::text("restore"),
         1,
     )?;
     tx.commit()?;
@@ -389,4 +415,61 @@ fn from_str_is_case_insensitive() {
     assert_eq!(MessageState::from_str("received"), MessageState::Received);
     assert_eq!(MessageState::from_str("Sent"), MessageState::Sent);
     assert_eq!(MessageState::from_str("unknown"), MessageState::Sending);
+}
+
+#[test]
+fn file_updates_only_settle_uploads_without_counting_as_edits() -> Result<(), StorageError> {
+    let mut conn = Connection::open_in_memory()?;
+    edit_fixture(&conn)?;
+    let file = |reference: &str, status| MessageFile {
+        reference: reference.into(),
+        status,
+    };
+    let uploading = [
+        file("YQ==", Some(FileStatus::Uploading)),
+        file("Yg==", Some(FileStatus::Uploading)),
+    ];
+    let tx = conn.transaction()?;
+    edit_message_for_principal_in_tx(
+        &tx,
+        7,
+        8,
+        PrincipalHandle(71),
+        10,
+        7,
+        MessageBody {
+            content: None,
+            files: &uploading,
+        },
+    )?;
+    let settled = [file("YQ==", None), file("Yg==", Some(FileStatus::Failed))];
+    update_message_files_in_tx(&tx, 7, 8, Some(PrincipalHandle(71)), 10, 7, &settled, true)?;
+    assert_eq!(
+        tx.query_row(
+            "SELECT content IS NULL, files, edited_count, (SELECT count(*) FROM message_edits) FROM messages WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)),
+        )?,
+        (true, files_json(&settled)?, 1, 1)
+    );
+
+    for files in [
+        vec![
+            file("YQ==", Some(FileStatus::Uploading)),
+            file("Yg==", Some(FileStatus::Failed)),
+        ],
+        vec![file("YQ==", None), file("Yg==", None)],
+        vec![file("Yg==", Some(FileStatus::Failed)), file("YQ==", None)],
+        vec![file("YQ==", None)],
+    ] {
+        assert!(matches!(
+            update_message_files_in_tx(&tx, 7, 8, Some(PrincipalHandle(71)), 10, 7, &files, true),
+            Err(StorageError::InvalidRelayPayload(_))
+        ));
+    }
+    assert!(matches!(
+        update_message_files_in_tx(&tx, 8, 7, Some(PrincipalHandle(70)), 10, 9, &settled, false),
+        Err(StorageError::MessageUnauthorized)
+    ));
+    Ok(())
 }

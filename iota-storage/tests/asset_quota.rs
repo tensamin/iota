@@ -8,14 +8,15 @@ fn upload_quota_reserves_and_releases_capacity() -> Result<(), Box<dyn std::erro
     iota_util::file_util::configure_storage_directory(directory.path().into());
     db::initialize_database()?;
     let mut config = config_util::IotaConfig::default();
-    config.storage_limits.max_asset_bytes = 5;
     config.storage_limits.max_user_asset_bytes = 8;
     config.storage_limits.max_active_asset_uploads_per_user = 2;
     config.storage_limits.min_free_asset_storage_bytes = 0;
     config_util::CONFIG.store(Arc::new(config));
 
     let hash = Sha256::digest(b"data");
-    assert!(user_assets::start(42, "oversize", "a", 6, &hash, "text/plain").is_err());
+    assert!(user_assets::start(42, "oversize", "a", 9, &hash, "text/plain").is_err());
+    user_assets::start(42, "large", "large", 6, &hash, "text/plain")?;
+    assert!(user_assets::abort(42, "large")?);
     user_assets::start(42, "first", "a", 4, &hash, "text/plain")?;
     user_assets::start(42, "second", "b", 4, &hash, "text/plain")?;
     assert!(user_assets::start(42, "third", "c", 1, &hash, "text/plain").is_err());
@@ -26,6 +27,11 @@ fn upload_quota_reserves_and_releases_capacity() -> Result<(), Box<dyn std::erro
     assert!(user_assets::start(42, "fourth", "d", 4, &hash, "text/plain").is_err());
     assert!(user_assets::abort(42, "third")?);
     user_assets::start(42, "fourth", "d", 4, &hash, "text/plain")?;
+
+    assert_eq!(user_assets::upload_capacity(42)?.0, 0);
+    assert_eq!(user_assets::upload_capacity(77)?.0, 8);
+    assert!(user_assets::abort(42, "fourth")?);
+    assert_eq!(user_assets::upload_capacity(42)?.0, 4);
 
     let barrier = Arc::new(std::sync::Barrier::new(2));
     let attempts: Vec<_> = ["concurrent-a", "concurrent-b"]

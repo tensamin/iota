@@ -256,6 +256,10 @@ pub fn handle_user_asset_list(cv: &CommunicationValue) -> CommunicationValue {
     };
     match user_assets::list_page(user_id, after_id) {
         Ok((assets, next)) => {
+            let (quota, disk) = match user_assets::upload_capacity(user_id) {
+                Ok(capacity) => capacity,
+                Err(error) => return asset_error(cv, error),
+            };
             let Ok(values) = assets
                 .iter()
                 .map(asset_metadata_value)
@@ -271,6 +275,16 @@ pub fn handle_user_asset_list(cv: &CommunicationValue) -> CommunicationValue {
                     DataValue::SignedNumber(next.unwrap_or(0).into()),
                 )
                 .add_typed_default(DataType::Assets, DataValue::Array(values))
+                .add_typed_default(
+                    DataType::Json,
+                    DataValue::Str(
+                        serde_json::json!({
+                            "quota_available_bytes": quota,
+                            "disk_available_bytes": disk,
+                        })
+                        .to_string(),
+                    ),
+                )
         }
         Err(error) => asset_error(cv, error),
     }

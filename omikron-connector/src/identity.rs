@@ -123,7 +123,12 @@ pub async fn resolve_omega_principal(
     let response = client
         .await_response(&request, Duration::from_secs(10))
         .await
-        .map_err(|error| IdentityError::Unavailable(error.to_string()))?;
+        .map_err(|error| match error {
+            crate::OmikronError::Rejected(CommunicationType::ErrorNotFound, _) => {
+                IdentityError::NotFound
+            }
+            error => IdentityError::Unavailable(error.to_string()),
+        })?;
     if !response.is_type(CommunicationType::GetUserData) {
         return Err(IdentityError::InvalidDescriptor(
             "Omega returned an unexpected identity response".into(),

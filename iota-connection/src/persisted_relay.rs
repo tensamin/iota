@@ -4,7 +4,10 @@ use crate::prepared_relay::{
     ApplicationOperation, DeliveryTarget, LocalEffect, PreparedRelayOperation, SecretCopy,
 };
 use iota_identity::{IotaNodeId, LocalUserId, PrincipalHandle};
-use iota_storage::{storage_error::StorageError, util::chat_files::MessageState};
+use iota_storage::{
+    storage_error::StorageError,
+    util::chat_files::{MessageFile, MessageState},
+};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
@@ -88,16 +91,22 @@ enum OperationV1 {
         revoke: tau_relay_protocol::files::ShareRevoke,
     },
     MessageSend {
-        content: String,
+        content: Option<String>,
+        files: Vec<MessageFile>,
         send_time: i64,
         height: i64,
         version: i64,
         reply_to: Option<i64>,
     },
     MessageEdit {
-        content: String,
+        content: Option<String>,
+        files: Vec<MessageFile>,
         send_time: i64,
         version: i64,
+    },
+    MessageFilesUpdate {
+        files: Vec<MessageFile>,
+        send_time: i64,
     },
     MessageReactionAdd {
         reaction: String,
@@ -143,12 +152,14 @@ macro_rules! convert_operation {
             $from::FileShareRevoked { revoke } => $to::FileShareRevoked { revoke },
             $from::MessageSend {
                 content,
+                files,
                 send_time,
                 height,
                 version,
                 reply_to,
             } => $to::MessageSend {
                 content,
+                files,
                 send_time,
                 height,
                 version,
@@ -156,13 +167,18 @@ macro_rules! convert_operation {
             },
             $from::MessageEdit {
                 content,
+                files,
                 send_time,
                 version,
             } => $to::MessageEdit {
                 content,
+                files,
                 send_time,
                 version,
             },
+            $from::MessageFilesUpdate { files, send_time } => {
+                $to::MessageFilesUpdate { files, send_time }
+            }
             $from::MessageReactionAdd {
                 reaction,
                 send_time,
@@ -815,9 +831,9 @@ mod tests {
                 {"principal":{"authority":AUTHORITY_B,"user_id":22},"handle":2,"revision":1,"home":"unknown","valid_until":null,"keys":[]}
             ],
             "created_at": 100, "accepted_at": 101, "frame": [1,2,3],
-            "frame_id": 7, "type_map_version": "1.0",
-            "type_map_fingerprint": tau_relay_protocol::dictionary_fingerprint("1.0").unwrap(),
-            "operation": {"MessageSend": {"content": "ciphertext", "send_time": 100,
+            "frame_id": 7, "type_map_version": "0.4",
+            "type_map_fingerprint": tau_relay_protocol::dictionary_fingerprint("0.4").unwrap(),
+            "operation": {"MessageSend": {"content": "ciphertext", "files": [], "send_time": 100,
                 "height": 0, "version": 1, "reply_to": null}},
             "effects": [{"owner": 5, "principal": 2, "sent_by_self": false}],
             "delivery": {"Local": 5}
@@ -922,7 +938,9 @@ mod tests {
     #[test]
     fn every_operation_has_an_independent_v1_representation() {
         let operations = [
-            json!({"MessageEdit":{"content":"new","send_time":100,"version":1}}),
+            json!({"MessageEdit":{"content":"new","files":[{"reference":"cmVm","status":"uploading"}],"send_time":100,"version":1}}),
+            json!({"MessageEdit":{"content":null,"files":[{"reference":"cmVm","status":null}],"send_time":100,"version":1}}),
+            json!({"MessageFilesUpdate":{"files":[{"reference":"cmVm","status":"failed"}],"send_time":100}}),
             json!({"MessageReactionAdd":{"reaction":"+","send_time":100}}),
             json!({"MessageReactionRemove":{"reaction":"+","send_time":100}}),
             json!({"MessageDelete":{"send_time":100}}),
@@ -953,7 +971,7 @@ mod tests {
             CREATE TABLE relay_inbox(signer_principal INTEGER, message_id TEXT, prepared_operation BLOB,
             processing_generation INTEGER DEFAULT 0, state TEXT DEFAULT 'received', signer_id INTEGER DEFAULT 11,
             destination_id INTEGER DEFAULT 22, frame BLOB DEFAULT X'010203', created_at INTEGER DEFAULT 100,
-            type_map_version TEXT DEFAULT '1.0', frame_id INTEGER DEFAULT 7,
+            type_map_version TEXT DEFAULT '0.4', frame_id INTEGER DEFAULT 7,
             recovery_status TEXT DEFAULT 'ready', recovery_error_code TEXT,
             recovery_attempts INTEGER DEFAULT 0, processing_owner TEXT, processing_deadline INTEGER,
             recovery_next_at INTEGER DEFAULT 0, recovery_last_attempt_at INTEGER,

@@ -37,12 +37,19 @@ impl RelayService {
         });
         let proposal = match persisted {
             Ok(proposal) => proposal,
-            Err(error) => return Ok(storage_outcome(&verified.frame, &error)),
+            Err(error) => {
+                return Ok(storage_outcome(
+                    &verified.frame,
+                    &verified.message_id,
+                    &error,
+                ));
+            }
         };
         relay_work::fault_point("after_proposal_persistence", &operation.message_id);
         if proposal.state == "rejected" {
             return Ok(storage_outcome(
                 &verified.frame,
+                &verified.message_id,
                 &proposal_rejection(&proposal),
             ));
         }
@@ -70,10 +77,18 @@ impl RelayService {
                     operation.recipient,
                     Vec::new(),
                 )),
-                Err(error) => Ok(storage_outcome(&verified.frame, &error)),
+                Err(error) => Ok(storage_outcome(
+                    &verified.frame,
+                    &verified.message_id,
+                    &error,
+                )),
             },
             Ok(None) => Ok(processing(&verified.frame, &operation.message_id)),
-            Err(error) => Ok(storage_outcome(&verified.frame, &error)),
+            Err(error) => Ok(storage_outcome(
+                &verified.frame,
+                &verified.message_id,
+                &error,
+            )),
         }
     }
 

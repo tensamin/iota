@@ -1,4 +1,4 @@
-use crate::message_common::{OptionalDataValueExt, now_millis_i64};
+use crate::message_common::{OptionalDataValueExt, message_body, message_files, now_millis_i64};
 use chat_files::MessageState;
 use iota_identity::{LocalUserId, PrincipalHandle, PrincipalHome};
 use iota_storage::storage_error::StorageError;
@@ -316,18 +316,30 @@ fn prepare_application_inner(
             {
                 return Err(invalid("message ID mismatch"));
             }
+            let (content, files) = message_body(frame).ok_or_else(|| invalid("message body"))?;
             ApplicationOperation::MessageSend {
-                content: text(frame, DataType::Content)?,
+                content,
+                files,
                 send_time: optional_number(frame, DataType::SendTime)?.unwrap_or(created_at),
                 height: optional_number(frame, DataType::Height)?.unwrap_or(0),
                 version: positive_version()?,
                 reply_to: optional_number(frame, DataType::ReplyId)?,
             }
         }
-        CommunicationType::MessageEdit => ApplicationOperation::MessageEdit {
-            content: text(frame, DataType::Content)?,
+        CommunicationType::MessageEdit => {
+            let (content, files) = message_body(frame).ok_or_else(|| invalid("message body"))?;
+            ApplicationOperation::MessageEdit {
+                content,
+                files,
+                send_time: number(frame, DataType::SendTime)?,
+                version: positive_version()?,
+            }
+        }
+        CommunicationType::MessageFilesUpdate => ApplicationOperation::MessageFilesUpdate {
+            files: message_files(frame)
+                .filter(|files| !files.is_empty())
+                .ok_or_else(|| invalid("message files"))?,
             send_time: number(frame, DataType::SendTime)?,
-            version: positive_version()?,
         },
         kind @ (CommunicationType::MessageReactionAdd
         | CommunicationType::MessageReactionRemove) => {
@@ -764,6 +776,7 @@ impl PreparedRelayOperation {
             }
             ApplicationOperation::MessageSend {
                 content,
+                files,
                 send_time,
                 height,
                 version,
@@ -794,7 +807,8 @@ impl PreparedRelayOperation {
                         external_user: external,
                         external_principal,
                         sent_by_self: effect.sent_by_self,
-                        content,
+                        content: content.as_deref(),
+                        files,
                         height: *height,
                         key_version: *version,
                         reply_to: *reply_to,
@@ -814,12 +828,17 @@ impl PreparedRelayOperation {
             }
             ApplicationOperation::MessageEdit {
                 content,
+                files,
                 send_time,
                 version,
             } => {
                 // Edits carry the replacement ciphertext's epoch, including
                 // historical epochs. Do not require the latest/original key.
                 chat_files::require_edit_key_in_tx(tx, owner, &chat_id, *version)?;
+                let body = chat_files::MessageBody {
+                    content: content.as_deref(),
+                    files,
+                };
                 if effect.sent_by_self {
                     chat_files::edit_message_for_principal_versioned_in_tx(
                         tx,
@@ -828,7 +847,7 @@ impl PreparedRelayOperation {
                         external_principal,
                         *send_time,
                         sender,
-                        content,
+                        body,
                         *version,
                     )?;
                 } else {
@@ -839,10 +858,22 @@ impl PreparedRelayOperation {
                         external_principal,
                         *send_time,
                         sender,
-                        content,
+                        body,
                         *version,
                     )?;
                 }
+            }
+            ApplicationOperation::MessageFilesUpdate { files, send_time } => {
+                chat_files::update_message_files_in_tx(
+                    tx,
+                    owner,
+                    external,
+                    Some(external_principal),
+                    *send_time,
+                    sender,
+                    files,
+                    effect.sent_by_self,
+                )?
             }
             ApplicationOperation::MessageReactionAdd {
                 reaction,

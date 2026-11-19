@@ -216,6 +216,12 @@ impl ClientConnection {
             return;
         }
 
+        if cv.is_type(CommunicationType::MessageFilesUpdate) {
+            self.send_message(&message_handlers::handle_message_files_update(&cv))
+                .await;
+            return;
+        }
+
         if cv.is_type(CommunicationType::MessageReactionAdd) {
             self.send_message(&message_handlers::handle_message_reaction(&cv, true))
                 .await;
@@ -462,6 +468,7 @@ impl ClientConnection {
                                         | CommunicationType::Relay
                                         | CommunicationType::AccountStateApplied
                                         | CommunicationType::MessageEdit
+                                        | CommunicationType::MessageFilesUpdate
                                         | CommunicationType::MessageReactionAdd
                                         | CommunicationType::MessageReactionRemove
                                         | CommunicationType::MessageDeleteLive

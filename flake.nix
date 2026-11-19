@@ -15,7 +15,7 @@
       flake = false;
     };
     mtp-src = {
-      url = "github:Nonanium/MTP/eef7562be64e77d8c29ba5af6df7596073e3c9f2";
+      url = "github:Nonanium/MTP/d222dc19d38aa03f538ab167ca4e4a3b187b9320";
       flake = false;
     };
   };
@@ -260,7 +260,7 @@
               pname = "iota";
               version = "0.1.0";
               src = source;
-              hash = "sha256-Ha3baUc3PIiZ927oztwWTSOnIyIerEDtWpzLQeXM7IQ=";
+              hash = "sha256-8ns3X3/K5BG6/O2FRVVc6x0DNMmSvN2ENOn6iowZp74=";
             };
           };
           cli = self.packages.${system}.default.overrideAttrs {

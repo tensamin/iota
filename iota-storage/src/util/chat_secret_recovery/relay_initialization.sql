@@ -46,6 +46,7 @@ ALTER TABLE relay_inbox ADD COLUMN initial_secret_chat_id TEXT GENERATED ALWAYS 
                 THEN json_extract(initial_secret_document,'$.operation.SetChatSecret.chat_id') ELSE '' END
         WHEN json_type(initial_secret_document,'$.operation.MessageSend') = 'object'
           OR json_type(initial_secret_document,'$.operation.MessageEdit') = 'object'
+          OR json_type(initial_secret_document,'$.operation.MessageFilesUpdate') = 'object'
           OR json_type(initial_secret_document,'$.operation.MessageReactionAdd') = 'object'
           OR json_type(initial_secret_document,'$.operation.MessageReactionRemove') = 'object'
           OR json_type(initial_secret_document,'$.operation.MessageDelete') = 'object'

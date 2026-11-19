@@ -345,6 +345,8 @@ pub(super) fn flag_deleted_by_external_with_principal_in_tx(
                   (?4 IS NULL AND external_user = ?2)
                   OR external_principal = ?4
               )
+              AND sent_by_self = 0
+              AND deleted_by_external = 0
             "#,
         params![
             storage_owner,

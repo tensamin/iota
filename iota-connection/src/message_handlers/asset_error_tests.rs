@@ -16,7 +16,7 @@ fn storage_errors_do_not_expose_internal_paths() {
     );
     let limit = asset_error(
         &request,
-        StorageError::AssetResourceLimit("max_asset_bytes"),
+        StorageError::AssetResourceLimit("max_user_asset_bytes"),
     );
     assert!(limit.is_type(CommunicationType::ErrorInvalidData));
     assert_eq!(

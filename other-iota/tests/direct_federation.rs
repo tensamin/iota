@@ -657,7 +657,7 @@ async fn authenticated_peer_delivers_relay_to_same_numeric_user_on_another_iota(
 
     let messages = chat_files::get_messages_for_principal(1, handle_a, 0, 10).unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].content, "ciphertext");
+    assert_eq!(messages[0].content.as_deref(), Some("ciphertext"));
     {
         let delivered = deliveries.0.lock().unwrap();
         assert_eq!(delivered.len(), 1);

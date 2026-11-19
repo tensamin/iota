@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "164acb5cbb2ba7890b23e02e9007c225eeea57db" }
+tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "a5efe246771ca176a50a1499e1fea352f0d95dec" }
 async-trait = "0.1.89"
 base64 = "0.22.1"
-mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "eef7562be64e77d8c29ba5af6df7596073e3c9f2", features = ["crypto", "files", "raw"] }
+mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "d222dc19d38aa03f538ab167ca4e4a3b187b9320", features = ["crypto", "files", "raw"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

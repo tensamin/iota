@@ -164,9 +164,6 @@ pub fn start(
     }
     let config = CONFIG.load();
     let limits = &config.storage_limits;
-    if size > limits.max_asset_bytes {
-        return Err(StorageError::AssetResourceLimit("max_asset_bytes"));
-    }
     cleanup_if_due()?;
     if let Some((status, file_name)) = load_upload(user_id, upload_id)? {
         if status.asset_id != asset_id
@@ -436,6 +433,27 @@ pub fn abort(user_id: i64, upload_id: &str) -> Result<bool, StorageError> {
 }
 
 pub const ASSET_PAGE_SIZE: i64 = 128;
+
+pub fn upload_capacity(user_id: i64) -> Result<(u64, u64), StorageError> {
+    let _io = lock_io()?;
+    cleanup_if_due()?;
+    let limits = &CONFIG.load().storage_limits;
+    let (used, reserved, outstanding): (i64, i64, i64) = db::with_db(|conn| {
+        Ok(conn.query_row(
+            "SELECT (SELECT COALESCE(SUM(size),0) FROM user_assets WHERE user_id=?1 AND deleted=0), COALESCE(SUM(size),0), (SELECT COALESCE(SUM(size-received),0) FROM user_asset_uploads WHERE state='uploading') FROM user_asset_uploads WHERE user_id=?1 AND state='uploading'",
+            [user_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?)
+    })?;
+    let quota = limits
+        .max_user_asset_bytes
+        .saturating_sub(used)
+        .saturating_sub(reserved)
+        .max(0) as u64;
+    let disk = fs2::available_space(asset_dir()?)?
+        .saturating_sub(limits.min_free_asset_storage_bytes)
+        .saturating_sub(outstanding.max(0) as u64);
+    Ok((quota, disk))
+}
 
 pub fn list_page(
     user_id: i64,

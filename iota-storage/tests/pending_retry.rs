@@ -35,7 +35,7 @@ fn pending_iota_relay_uses_bounded_backoff_and_quarantine() {
         &[1, 2, 3],
         1,
         7,
-        "1.0",
+        "0.4",
     )
     .unwrap();
     let id = relay_queue::list(1).unwrap()[0].id;

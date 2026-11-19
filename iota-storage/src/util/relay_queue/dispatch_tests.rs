@@ -25,7 +25,7 @@ pub(crate) fn setup(connection: &Connection) {
              INSERT INTO user_residency VALUES (7, 'managed');",
         ).unwrap();
     connection.execute(
-            "INSERT INTO pending_relays (destination_id, target_kind, frame, created_at, frame_id, type_map_version, relay_signer_id, relay_destination_user_id, relay_message_id, destination_principal, signer_principal, destination_node_id) VALUES (0, 2, X'0102', 10, 42, '1.0', 7, 8, 'first', 71, 70, ?1)",
+            "INSERT INTO pending_relays (destination_id, target_kind, frame, created_at, frame_id, type_map_version, relay_signer_id, relay_destination_user_id, relay_message_id, destination_principal, signer_principal, destination_node_id) VALUES (0, 2, X'0102', 10, 42, '0.4', 7, 8, 'first', 71, 70, ?1)",
             [format!("iota:v1:{}", "01".repeat(32))],
         ).unwrap();
 }
@@ -40,7 +40,7 @@ fn concurrent_connections_claim_disjoint_work() {
     let path = directory.path().join("dispatch.sqlite");
     let connection = Connection::open(&path).unwrap();
     setup(&connection);
-    connection.execute("INSERT INTO pending_relays SELECT 2, destination_id, target_kind, frame, created_at, frame_id, type_map_version, relay_signer_id, relay_destination_user_id, 'second', delivery_state, last_error, destination_principal, signer_principal, destination_node_id, destination_authority_id, attempt_count, last_attempt_at, next_attempt_at, dispatch_generation, dispatch_owner, dispatch_deadline FROM pending_relays WHERE id = 1", []).unwrap();
+    connection.execute("INSERT INTO pending_relays SELECT 2, destination_id, target_kind, frame, created_at, frame_id, type_map_version, relay_signer_id, relay_destination_user_id, 'second', delivery_state, last_error, 72, signer_principal, destination_node_id, destination_authority_id, attempt_count, last_attempt_at, next_attempt_at, dispatch_generation, dispatch_owner, dispatch_deadline FROM pending_relays WHERE id = 1", []).unwrap();
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let workers: Vec<_> = (0..2)
         .map(|_| {
@@ -207,7 +207,7 @@ fn active_targets_keep_their_persisted_kind_mapping() {
             &[3],
             20,
             43,
-            "1.0",
+            "0.4",
         )
         .unwrap();
         assert_eq!(load_in_tx(&tx, id).unwrap().unwrap().target, target);
@@ -507,7 +507,7 @@ fn pause_and_resume_cannot_revive_client_claim() {
 fn reused_frames_are_ambiguous_before_mutation() {
     let mut connection = Connection::open_in_memory().unwrap();
     setup(&connection);
-    connection.execute("INSERT INTO pending_relays (destination_id, target_kind, frame, created_at, frame_id, type_map_version) VALUES (0, 2, X'03', 20, 42, '1.0')", []).unwrap();
+    connection.execute("INSERT INTO pending_relays (destination_id, target_kind, frame, created_at, frame_id, type_map_version) VALUES (0, 2, X'03', 20, 42, '0.4')", []).unwrap();
     let tx = connection.transaction().unwrap();
     assert!(matches!(
         ensure_unique_frame_in_tx(&tx, 0, 2, 42),

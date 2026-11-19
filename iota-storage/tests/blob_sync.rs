@@ -42,7 +42,7 @@ fn blob_limits_cas_and_sync_capture_share_the_transaction() {
             .0
             .auth_generation,
         schema: relay_protocol::sync::SCHEMA.into(),
-        dictionary: relay_protocol::dictionary_fingerprint("1.0").unwrap(),
+        dictionary: relay_protocol::dictionary_fingerprint("0.4").unwrap(),
     };
     let response = sync::paged::execute(
         7,

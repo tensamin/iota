@@ -45,6 +45,10 @@ impl OmikronConnection {
             self.dispatch_relay(cv).await;
             return;
         }
+
+        if cv.get_comm_type_enum().is_some_and(tau::is_protocol_error) {
+            return;
+        }
         if cv.require_id().is_err() {
             let _ = self
                 .send_message(&error_response(&cv, CommunicationType::ErrorInvalidData))

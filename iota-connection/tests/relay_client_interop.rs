@@ -234,7 +234,7 @@ fn native_rust_peer_metadata_and_content_open_at_both_iotas() {
     };
     let signer = principal(11, 91, nodes[0].node_id().clone(), vec![signer_key]);
     let recipient = principal(22, 92, nodes[1].node_id().clone(), Vec::new());
-    let map = TypeMap::new(mtp::type_map::Version::parse("1.0").unwrap());
+    let map = TypeMap::new(mtp::type_map::Version::parse("0.4").unwrap());
     let principals = [&signer.principal, &recipient.principal]
         .map(|principal| tau_relay_protocol::Principal::try_from(principal).unwrap());
     fixture.chat_id = tau_relay_protocol::canonical_chat_id(&principals[0], &principals[1]);
@@ -276,7 +276,7 @@ fn native_rust_peer_metadata_and_content_open_at_both_iotas() {
         signer: principals[0].clone(),
         recipient: principals[1].clone(),
         destination: nodes[1].node_id().as_str().into(),
-        type_map_version: "1.0".into(),
+        type_map_version: "0.4".into(),
         type_map_fingerprint: map.fingerprint_hex().unwrap(),
     };
     let signing = mtp::crypto::Ed25519Signer::new(&signing_keys.sig_cl_secret_key).unwrap();
