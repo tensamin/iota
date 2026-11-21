@@ -102,7 +102,7 @@ pub(crate) fn capture_transaction_events(tx: &Transaction<'_>) -> Result<(), Sto
                 },
             };
             tx.execute("UPDATE sync_events SET projection=?3,projection_principal=?4,projection_generation=?5,projection_dictionary=?6 WHERE user_id=?1 AND version=?2 AND projection IS NULL",
-                params![owner,sequence,serialize(&event)?,canonical,generation,iota_identity::relay_protocol::dictionary_fingerprint("1.0").map_err(|error| StorageError::Other(error.to_string()))?])?;
+                params![owner,sequence,serialize(&event)?,canonical,generation,iota_identity::relay_protocol::dictionary_fingerprint(iota_identity::relay_protocol::PROTECTED_TYPE_MAP_VERSION).map_err(|error| StorageError::Other(error.to_string()))?])?;
         }
     }
     Ok(())
@@ -744,7 +744,14 @@ fn record(
         .any(|field| fields.get(*field).and_then(Value::as_str) == Some("1"))
     {
         fields.remove("content");
+        fields.remove("files");
         fields.remove("blob");
+    }
+
+    if let Some(Value::String(files)) = fields.get("files") {
+        let files: Value =
+            serde_json::from_str(files).map_err(|error| StorageError::Other(error.to_string()))?;
+        fields.insert("files".into(), files);
     }
     if entity == "message" && fields.get("deleted_by_external").and_then(Value::as_str) != Some("1")
     {
@@ -778,7 +785,7 @@ fn record(
 fn columns(entity: &str) -> &'static str {
     match entity {
         "message" => {
-            "id,external_principal,relay_signer_principal,relay_message_id,message_time,authored_at,content,sent_by_self,message_state,height,key_version,reply_to,edited_count,deleted_by_external,history_deleted,delivery_pruned"
+            "id,external_principal,relay_signer_principal,relay_message_id,message_time,authored_at,content,files,sent_by_self,message_state,height,key_version,reply_to,edited_count,deleted_by_external,history_deleted,delivery_pruned"
         }
         "contact" => {
             "id,principal_handle,user_name,created_at,last_message_at,notifications,notifications_read_at"
@@ -840,13 +847,7 @@ fn acknowledge(
             }
             let record: Record = serde_json::from_value(value)
                 .map_err(|error| StorageError::Other(error.to_string()))?;
-            if record.entity == Entity::Message
-                && record
-                    .value
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .is_some()
-            {
+            if record.entity == Entity::Message && record.value.get("files").is_some() {
                 let id = record
                     .key
                     .parse::<i64>()

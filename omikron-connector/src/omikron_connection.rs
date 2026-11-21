@@ -62,7 +62,8 @@ async fn run_asset_handler<T: Send + 'static>(
 ) -> Result<T, CommunicationValue> {
     let permit = ASSET_IO_PERMITS
         .clone()
-        .try_acquire_owned()
+        .acquire_owned()
+        .await
         .map_err(|_| error_response(cv, CommunicationType::ErrorInternal))?;
     let frame = cv.clone();
     tokio::task::spawn_blocking(move || {

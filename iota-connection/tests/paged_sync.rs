@@ -40,7 +40,7 @@ fn pages_pin_state_authorize_scope_and_require_explicit_complete_acknowledgment(
             .0
             .auth_generation,
         schema: tau::sync::SCHEMA.into(),
-        dictionary: tau::relay_protocol::dictionary_fingerprint("1.3").unwrap(),
+        dictionary: tau::relay_protocol::dictionary_fingerprint("0.4").unwrap(),
     };
     let response = exchange(Request::Snapshot {
         scope: scope.clone(),

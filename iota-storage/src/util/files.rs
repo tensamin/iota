@@ -365,7 +365,6 @@ pub(crate) fn file_on(
 ) -> Result<(i64, FileManifest, Option<String>, String), StorageError> {
     key.validate().map_err(|_| invalid())?;
     let origin = handle_on(conn, &key.origin)?;
-    not_deleted(conn, owner, origin, &key.file_id)?;
     let (id,payload,asset,state): (i64,String,Option<String>,String) = conn.query_row("SELECT id,manifest,asset_id,state FROM files WHERE storage_user_id=?1 AND origin_principal=?2 AND file_id=?3 AND version=?4 AND state!='deleted'", params![owner,origin,key.file_id,key.version], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?.ok_or(StorageError::MissingRelayDependency)?;
     Ok((id, decode(&payload)?, asset, state))
 }

@@ -6,7 +6,7 @@ pub fn handle_message_edit(cv: &CommunicationValue) -> CommunicationValue {
         Ok(mutation) => mutation,
         Err(response) => return response,
     };
-    let Some(content) = cv.get_data(DataType::Content).as_str() else {
+    let Some((content, files)) = message_body(cv) else {
         return error_response(cv, CommunicationType::ErrorInvalidData);
     };
 
@@ -16,9 +16,38 @@ pub fn handle_message_edit(cv: &CommunicationValue) -> CommunicationValue {
         mutation.partner_principal,
         mutation.send_time,
         mutation.sender_id,
-        content,
+        chat_files::MessageBody {
+            content: content.as_deref(),
+            files: &files,
+        },
     ) {
         Ok(()) => success_response(cv),
+        Err(_) => error_response(cv, CommunicationType::ErrorNotFound),
+    }
+}
+
+pub fn handle_message_files_update(cv: &CommunicationValue) -> CommunicationValue {
+    let mutation = match message_mutation(cv) {
+        Ok(mutation) => mutation,
+        Err(response) => return response,
+    };
+    let Some(files) = message_files(cv).filter(|files| !files.is_empty()) else {
+        return error_response(cv, CommunicationType::ErrorInvalidData);
+    };
+
+    match chat_files::update_message_files(
+        mutation.sender_id,
+        mutation.partner_id,
+        Some(mutation.partner_principal),
+        mutation.send_time,
+        mutation.sender_id,
+        &files,
+        true,
+    ) {
+        Ok(()) => success_response(cv),
+        Err(StorageError::InvalidRelayPayload(_)) => {
+            error_response(cv, CommunicationType::ErrorInvalidData)
+        }
         Err(_) => error_response(cv, CommunicationType::ErrorNotFound),
     }
 }
@@ -128,7 +157,11 @@ pub(super) fn stored_message_fields(
             DataType::SendTime,
             DataValue::SignedNumber(message.message_time as i128),
         ),
-        (DataType::Content, DataValue::Str(message.content.clone())),
+        (
+            DataType::Files,
+            message_files_value(map, &message.files)
+                .map_err(|error| StorageError::Other(error.to_string()))?,
+        ),
         (
             DataType::MessageState,
             DataValue::Str(message.message_state.clone()),
@@ -186,6 +219,9 @@ pub(super) fn stored_message_fields(
     }
     if let Some(failure) = &message.delivery_failure {
         fields.push((DataType::ErrorType, DataValue::Str(failure.clone())));
+    }
+    if let Some(content) = &message.content {
+        fields.push((DataType::Content, DataValue::Str(content.clone())));
     }
     if message.edited {
         fields.push((DataType::Edited, DataValue::Bool(true)));

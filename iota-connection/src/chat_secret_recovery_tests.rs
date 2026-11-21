@@ -349,8 +349,8 @@ fn escrow() -> storage::Escrow {
             &frame,
         ),
         original_frame: frame,
-        original_type_map_version: "1.0".into(),
-        original_type_map_fingerprint: tau_relay_protocol::dictionary_fingerprint("1.0").unwrap(),
+        original_type_map_version: "0.4".into(),
+        original_type_map_fingerprint: tau_relay_protocol::dictionary_fingerprint("0.4").unwrap(),
         format: storage::RelayFormat::NativeMtpSealedV1,
         envelopes: [
             storage::RecipientEnvelope {

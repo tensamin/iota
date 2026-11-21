@@ -3,7 +3,7 @@ pub use edits::{
     apply_remote_edit, apply_remote_edit_for_principal, apply_remote_edit_for_principal_in_tx,
     apply_remote_edit_for_principal_versioned_in_tx, edit_message, edit_message_for_principal,
     edit_message_for_principal_in_tx, edit_message_for_principal_versioned_in_tx,
-    require_edit_key_in_tx,
+    require_edit_key_in_tx, update_message_files, update_message_files_in_tx,
 };
 mod deletion;
 pub use deletion::{
@@ -37,7 +37,36 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 pub const MAX_UNIQUE_REACTIONS_PER_MESSAGE: usize = 10;
 
-pub use iota_identity::relay_protocol::application::MessageState;
+pub use iota_identity::relay_protocol::application::{FileStatus, MessageFile, MessageState};
+
+#[derive(Clone, Copy, Debug)]
+pub struct MessageBody<'a> {
+    pub content: Option<&'a str>,
+    pub files: &'a [MessageFile],
+}
+
+impl<'a> MessageBody<'a> {
+    pub fn text(content: &'a str) -> Self {
+        Self {
+            content: Some(content),
+            files: &[],
+        }
+    }
+}
+
+fn files_json(files: &[MessageFile]) -> Result<String, StorageError> {
+    serde_json::to_string(files).map_err(|error| StorageError::Other(error.to_string()))
+}
+
+fn files_column(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Vec<MessageFile>> {
+    serde_json::from_str(&row.get::<_, String>(index)?).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
 
 #[derive(Clone, Debug)]
 pub struct MessageStateUpdate {
@@ -63,7 +92,8 @@ pub struct StoredMessage {
     pub read_recorded_at: Option<i64>,
     pub delivery_failed_at: Option<i64>,
     pub delivery_failure: Option<String>,
-    pub content: String,
+    pub content: Option<String>,
+    pub files: Vec<MessageFile>,
     pub edited: bool,
     pub sent_by_self: bool,
     pub message_state: String,
@@ -83,7 +113,8 @@ pub struct NewMessage<'a> {
     pub external_user: i64,
     pub external_principal: iota_identity::PrincipalHandle,
     pub sent_by_self: bool,
-    pub content: &'a str,
+    pub content: Option<&'a str>,
+    pub files: &'a [MessageFile],
     pub height: i64,
     pub key_version: i64,
     pub reply_to: Option<i64>,

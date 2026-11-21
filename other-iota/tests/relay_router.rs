@@ -374,7 +374,7 @@ async fn authenticated_router_forwards_and_mailboxes_opaque_relays() {
     );
     let messages = chat_files::get_messages_for_principal(1, handle_a, 0, 10).unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].content, "opaque");
+    assert_eq!(messages[0].content.as_deref(), Some("opaque"));
     let delivered = deliveries.0.lock().unwrap();
     assert_eq!(delivered.len(), 1);
     assert_eq!(delivered[0].0, handle_b);

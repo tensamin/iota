@@ -91,7 +91,7 @@ fn purge_and_erase_fence_accepted_work_without_touching_unrelated_corruption() {
                     destination_id: owner as u64,
                     frame: b"accepted-frame",
                     frame_id: 42,
-                    type_map_version: "1.0",
+                    type_map_version: "0.4",
                 },
                 now - 1,
             )
@@ -109,7 +109,7 @@ fn purge_and_erase_fence_accepted_work_without_touching_unrelated_corruption() {
                         "signer_identity": {"authority": node.authority_id().as_str(), "user_id": owner},
                         "recipient_identity": {"authority": node.authority_id().as_str(), "user_id": owner},
                         "created_at": now, "accepted_at": now, "frame": [1], "frame_id": 42,
-                        "type_map_version": "1.0", "operation": {"AddConversation": {"name": null}},
+                        "type_map_version": "0.4", "operation": {"AddConversation": {"name": null}},
                         "effects": [{"owner": owner, "principal": principal.0, "sent_by_self": true}],
                         "delivery": {"Local": owner}
                     }

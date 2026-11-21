@@ -60,8 +60,8 @@ pub(crate) fn escrow(version: i64) -> Escrow {
         message_id: format!("epoch-{version}"),
         operation_digest: operation_digest(RelayFormat::NativeMtpSealedV1, &original_frame),
         original_frame,
-        original_type_map_version: "1.0".into(),
-        original_type_map_fingerprint: iota_identity::relay_protocol::dictionary_fingerprint("1.0")
+        original_type_map_version: "0.4".into(),
+        original_type_map_fingerprint: iota_identity::relay_protocol::dictionary_fingerprint("0.4")
             .unwrap(),
         format: RelayFormat::NativeMtpSealedV1,
         envelopes: [

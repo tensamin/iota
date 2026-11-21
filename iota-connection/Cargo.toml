@@ -14,12 +14,12 @@ iota-identity = { path = "../iota-identity" }
 iota-logger = { path = "../iota-logger" }
 iota-storage = { path = "../iota-storage" }
     iota-util = { path = "../iota-util" }
-mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "eef7562be64e77d8c29ba5af6df7596073e3c9f2", features = ["crypto"] }
+mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "d222dc19d38aa03f538ab167ca4e4a3b187b9320", features = ["crypto"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = "0.40.0"
-tau-relay-protocol = { git = "https://github.com/TensaminDev/Tau.git", rev = "164acb5cbb2ba7890b23e02e9007c225eeea57db" }
-tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "164acb5cbb2ba7890b23e02e9007c225eeea57db" }
+tau-relay-protocol = { git = "https://github.com/TensaminDev/Tau.git", rev = "a5efe246771ca176a50a1499e1fea352f0d95dec" }
+tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "a5efe246771ca176a50a1499e1fea352f0d95dec" }
 tokio = { version = "1.50.0", features = ["rt"] }
 uuid = "1"
 

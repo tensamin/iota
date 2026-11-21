@@ -48,7 +48,7 @@ fn large_accounts_are_read_incrementally_at_a_pinned_boundary() {
             .0
             .auth_generation,
         schema: relay_protocol::sync::SCHEMA.into(),
-        dictionary: relay_protocol::dictionary_fingerprint("1.0").unwrap(),
+        dictionary: relay_protocol::dictionary_fingerprint("0.4").unwrap(),
     };
     let first = paged::execute(
         7,

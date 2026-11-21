@@ -412,7 +412,7 @@ mod tests {
             destination_id: 8,
             frame,
             frame_id: 42,
-            type_map_version: "1.0",
+            type_map_version: "0.4",
         }
     }
 

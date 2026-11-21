@@ -6,8 +6,8 @@
 mod messages;
 use messages::stored_message_value;
 pub use messages::{
-    handle_get_chats, handle_message_delete, handle_message_edit, handle_message_get,
-    handle_message_reaction, handle_messages_get,
+    handle_get_chats, handle_message_delete, handle_message_edit, handle_message_files_update,
+    handle_message_get, handle_message_reaction, handle_messages_get,
 };
 mod setting_handlers;
 #[cfg(test)]

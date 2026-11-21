@@ -159,9 +159,9 @@ async fn committed_hints_fan_out_reconcile_reconnect_dedup_and_obey_revocation()
             let format = recovery::RelayFormat::NativeMtpSealedV1;
             let frame = vec![version as u8, 8];
             recovery::Escrow {
-                original_type_map_version: "1.0".into(),
+                original_type_map_version: "0.4".into(),
                 original_type_map_fingerprint:
-                    iota_identity::relay_protocol::dictionary_fingerprint("1.0").unwrap(),
+                    iota_identity::relay_protocol::dictionary_fingerprint("0.4").unwrap(),
                 first: ids[0].clone(),
                 second: ids[1].clone(),
                 version,

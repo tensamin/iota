@@ -345,8 +345,10 @@ CREATE TABLE IF NOT EXISTS local_identity_allocator (
 CREATE TABLE IF NOT EXISTS message_edits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 message_id INTEGER NOT NULL REFERENCES messages(id),
-                content_before TEXT NOT NULL,
-                content_after TEXT NOT NULL,
+                content_before TEXT,
+                content_after TEXT,
+                files_before TEXT NOT NULL,
+                files_after TEXT NOT NULL,
                 edited_at INTEGER NOT NULL,
                 edited_by INTEGER NOT NULL
             , content_before_key_version INTEGER CHECK(content_before_key_version > 0), content_after_key_version INTEGER CHECK(content_after_key_version > 0));
@@ -370,7 +372,8 @@ CREATE TABLE IF NOT EXISTS messages (
                 storage_owner INTEGER NOT NULL,
                 external_user INTEGER NOT NULL,
                 message_time INTEGER NOT NULL,
-                content TEXT NOT NULL,
+                content TEXT,
+                files TEXT NOT NULL DEFAULT '[]',
                 sent_by_self INTEGER NOT NULL,
                 message_state TEXT NOT NULL,
                 delivery_pruned INTEGER NOT NULL DEFAULT 0 CHECK (delivery_pruned IN (0, 1))
@@ -413,7 +416,7 @@ CREATE TABLE IF NOT EXISTS pending_relays (
                 target_kind INTEGER NOT NULL DEFAULT 0,
                 frame BLOB NOT NULL,
                 created_at INTEGER NOT NULL,
-                frame_id INTEGER NOT NULL DEFAULT 0, type_map_version TEXT NOT NULL DEFAULT '1.0', relay_signer_id INTEGER, relay_destination_user_id INTEGER, relay_message_id TEXT, delivery_state TEXT NOT NULL DEFAULT 'ready' CHECK (delivery_state IN ('ready', 'waiting_client', 'quarantined')), last_error TEXT, destination_principal INTEGER REFERENCES principals(principal_pk), signer_principal INTEGER REFERENCES principals(principal_pk), destination_node_id TEXT, destination_authority_id TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, next_attempt_at INTEGER NOT NULL DEFAULT 0, dispatch_generation INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_generation >= 0), dispatch_owner TEXT, dispatch_deadline INTEGER,
+                frame_id INTEGER NOT NULL DEFAULT 0, type_map_version TEXT NOT NULL DEFAULT '0.4', relay_signer_id INTEGER, relay_destination_user_id INTEGER, relay_message_id TEXT, delivery_state TEXT NOT NULL DEFAULT 'ready' CHECK (delivery_state IN ('ready', 'waiting_client', 'quarantined')), last_error TEXT, destination_principal INTEGER REFERENCES principals(principal_pk), signer_principal INTEGER REFERENCES principals(principal_pk), destination_node_id TEXT, destination_authority_id TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, next_attempt_at INTEGER NOT NULL DEFAULT 0, dispatch_generation INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_generation >= 0), dispatch_owner TEXT, dispatch_deadline INTEGER,
                 UNIQUE(destination_id, frame)
             );
 
@@ -525,6 +528,7 @@ CREATE TABLE IF NOT EXISTS "relay_inbox" (
                 THEN json_extract(initial_secret_document,'$.operation.SetChatSecret.chat_id') ELSE '' END
         WHEN json_type(initial_secret_document,'$.operation.MessageSend') = 'object'
           OR json_type(initial_secret_document,'$.operation.MessageEdit') = 'object'
+          OR json_type(initial_secret_document,'$.operation.MessageFilesUpdate') = 'object'
           OR json_type(initial_secret_document,'$.operation.MessageReactionAdd') = 'object'
           OR json_type(initial_secret_document,'$.operation.MessageReactionRemove') = 'object'
           OR json_type(initial_secret_document,'$.operation.MessageDelete') = 'object'

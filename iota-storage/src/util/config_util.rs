@@ -88,7 +88,6 @@ pub struct IotaConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StorageLimits {
-    pub max_asset_bytes: i64,
     pub max_user_asset_bytes: i64,
     #[serde(default = "default_max_user_blobs")]
     pub max_user_blobs: i64,
@@ -109,7 +108,6 @@ const fn default_max_asset_io_workers() -> usize {
 impl Default for StorageLimits {
     fn default() -> Self {
         Self {
-            max_asset_bytes: 256 * 1024 * 1024,
             max_user_asset_bytes: 2 * 1024 * 1024 * 1024,
             max_user_blobs: default_max_user_blobs(),
             max_active_asset_uploads_per_user: 4,
@@ -401,10 +399,7 @@ pub fn validate_config(config: &IotaConfig) -> Result<(), ConfigError> {
         return Err(ConfigError::InvalidRelayFutureSkew);
     }
     let limits = &config.storage_limits;
-    if limits.max_asset_bytes <= 0 {
-        return Err(ConfigError::InvalidStorageLimit("max_asset_bytes"));
-    }
-    if limits.max_user_asset_bytes < limits.max_asset_bytes {
+    if limits.max_user_asset_bytes <= 0 {
         return Err(ConfigError::InvalidStorageLimit("max_user_asset_bytes"));
     }
     if limits.max_active_asset_uploads_per_user == 0 {
@@ -561,13 +556,7 @@ mod tests {
     #[test]
     fn asset_limits_reject_invalid_quota_and_upload_count() {
         let mut config = IotaConfig::default();
-        config.storage_limits.max_asset_bytes = 0;
-        assert!(matches!(
-            validate_config(&config),
-            Err(ConfigError::InvalidStorageLimit("max_asset_bytes"))
-        ));
-        config.storage_limits.max_asset_bytes = 10;
-        config.storage_limits.max_user_asset_bytes = 9;
+        config.storage_limits.max_user_asset_bytes = 0;
         assert!(matches!(
             validate_config(&config),
             Err(ConfigError::InvalidStorageLimit("max_user_asset_bytes"))

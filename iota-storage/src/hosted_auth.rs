@@ -620,7 +620,7 @@ mod tests {
                         destination_id: 8,
                         frame: b"exact verified operation",
                         frame_id: 1,
-                        type_map_version: "1.0",
+                        type_map_version: "0.4",
                     },
                 )
                 .unwrap();

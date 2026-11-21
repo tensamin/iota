@@ -82,11 +82,14 @@ impl OmikronConnection {
         let Some(send_time) = data_i64(cv, DataType::SendTime).filter(|time| *time > 0) else {
             return;
         };
-        let Some(content) = cv.get_data(DataType::Content).as_str() else {
+        let Some((content, files)) = message_body(cv) else {
             return;
         };
-        if chat_files::apply_remote_edit(receiver_id, sender_id, send_time, sender_id, content)
-            .is_ok()
+        let body = chat_files::MessageBody {
+            content: content.as_deref(),
+            files: &files,
+        };
+        if chat_files::apply_remote_edit(receiver_id, sender_id, send_time, sender_id, body).is_ok()
         {
             let _ = self.send_message(cv).await;
         }
@@ -169,18 +172,24 @@ impl OmikronConnection {
                 .await;
             return;
         };
-        let Some(content) = cv.get_data(DataType::Content).as_str() else {
+        let Some((content, files)) = message_body(cv) else {
             let _ = self
                 .send_message(&error_response(cv, CommunicationType::ErrorInvalidData))
                 .await;
             return;
         };
-        let live = Self::mutation_live_message(
-            CommunicationType::MessageEditLive,
-            cv,
-            &mutation,
-            vec![(DataType::Content, DataValue::Str(content.to_string()))],
-        );
+        let Ok(files_value) = message_files_value(&TypeMap::latest(), &files) else {
+            let _ = self
+                .send_message(&error_response(cv, CommunicationType::ErrorInternal))
+                .await;
+            return;
+        };
+        let mut fields = vec![(DataType::Files, files_value)];
+        if let Some(content) = &content {
+            fields.push((DataType::Content, DataValue::Str(content.clone())));
+        }
+        let live =
+            Self::mutation_live_message(CommunicationType::MessageEditLive, cv, &mutation, fields);
         let partner_is_local =
             match iota_storage::users::user_manager::get_user(mutation.partner_id) {
                 Ok(user) => user.is_some(),
@@ -197,7 +206,10 @@ impl OmikronConnection {
                 mutation.sender_id,
                 mutation.send_time,
                 mutation.sender_id,
-                content,
+                chat_files::MessageBody {
+                    content: content.as_deref(),
+                    files: &files,
+                },
             )
             .is_err()
         {

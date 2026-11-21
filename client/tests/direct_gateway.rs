@@ -672,7 +672,7 @@ async fn hosted_client_loads_state_originates_relay_and_receives_delivery() {
         saved.external_principal.unwrap(),
         saved.message_time,
         saved.external_user,
-        "current edited ciphertext",
+        iota_storage::util::chat_files::MessageBody::text("current edited ciphertext"),
     )
     .unwrap();
     let edited = client
@@ -819,7 +819,10 @@ async fn hosted_client_loads_state_originates_relay_and_receives_delivery() {
             iota_storage::util::sync::now_millis() as u64,
             CommunicationValue::new(CommunicationType::MessageSend)
                 .add_typed_default(DataType::Content, DataValue::Str("ciphertext".into()))
-                .add_typed_default(DataType::SendTime, DataValue::SignedNumber(10))
+                .add_typed_default(
+                    DataType::SendTime,
+                    DataValue::SignedNumber(10 + peers.len() as i128),
+                )
                 .add_typed_default(DataType::VersionNumber, DataValue::SignedNumber(1)),
             &remote_key,
             vec![
@@ -1042,7 +1045,10 @@ async fn hosted_client_loads_state_originates_relay_and_receives_delivery() {
                 iota_storage::util::sync::now_millis() as u64,
                 CommunicationValue::new(CommunicationType::MessageSend)
                     .add_typed_default(DataType::Content, DataValue::Str("ciphertext".into()))
-                    .add_typed_default(DataType::SendTime, DataValue::SignedNumber(10))
+                    .add_typed_default(
+                        DataType::SendTime,
+                        DataValue::SignedNumber(40 + budget_secs as i128),
+                    )
                     .add_typed_default(DataType::VersionNumber, DataValue::SignedNumber(1)),
                 &local_key,
                 vec![

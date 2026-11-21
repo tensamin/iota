@@ -19,6 +19,7 @@ pub fn add_message_in_tx(
         external_principal,
         sent_by_self,
         content,
+        files,
         height,
         key_version,
         reply_to,
@@ -26,6 +27,14 @@ pub fn add_message_in_tx(
         destination_iota_received_at,
         initial_state,
     } = message;
+
+    if tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE storage_owner = ?1 AND external_principal = ?2 AND message_time = ?3 AND sent_by_self = ?4 AND deleted_by_external = 0)",
+        params![storage_owner, external_principal.0, send_time, sent_by_self],
+        |row| row.get::<_, bool>(0),
+    )? {
+        return Err(StorageError::InvalidRelayPayload("duplicate send time"));
+    }
     let stored_at = sync::now_millis();
     let policy = message_storage_policy::get_in_tx(tx, storage_owner)?;
     let expires_at = match policy.retention {
@@ -42,8 +51,8 @@ pub fn add_message_in_tx(
                 storage_owner, external_user, message_time, content, sent_by_self,
                 message_state, height, key_version, reply_to, relay_signer_id, relay_message_id,
                 authored_at, origin_iota_received_at, destination_iota_received_at, stored_at,
-                expires_at, external_principal, relay_signer_principal
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                expires_at, external_principal, relay_signer_principal, files
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
             "#,
             params![
                 storage_owner,
@@ -64,6 +73,7 @@ pub fn add_message_in_tx(
                 expires_at,
                 external_principal.0,
                 relay_signer_principal.0,
+                files_json(files)?,
             ],
         )?;
     let msg_id = tx.last_insert_rowid();
@@ -163,7 +173,7 @@ pub fn get_messages_for_principal(
                    origin_iota_received_at, destination_iota_received_at,
                    client_received_at, client_received_recorded_at, read_at,
                    read_recorded_at, delivery_failed_at, delivery_failure, content, sent_by_self, message_state, height, key_version,
-                   reply_to, edited_count, external_user, relay_signer_principal
+                   reply_to, edited_count, external_user, relay_signer_principal, files
             FROM messages
             WHERE storage_owner = ?1 AND external_principal = ?2 AND deleted_by_external = 0 AND history_deleted = 0
             ORDER BY COALESCE(destination_iota_received_at, origin_iota_received_at, authored_at, id) DESC, id DESC
@@ -194,6 +204,7 @@ pub fn get_messages_for_principal(
                     delivery_failed_at: row.get(11)?,
                     delivery_failure: row.get(12)?,
                     content: row.get(13)?,
+                    files: files_column(row, 22)?,
                     sent_by_self: row.get::<_, i64>(14)? != 0,
                     message_state: row.get(15)?,
                     height: row.get(16)?,
@@ -263,7 +274,7 @@ pub fn get_message(
                    client_received_at, client_received_recorded_at, read_at,
                    read_recorded_at, delivery_failed_at, delivery_failure, content, sent_by_self, message_state, height, key_version,
                    reply_to, edited_count, external_user, external_principal,
-                   relay_signer_principal
+                   relay_signer_principal, files
             FROM messages
             WHERE storage_owner = ?1
               AND message_time = ?2
@@ -304,6 +315,7 @@ pub fn get_message(
                     delivery_failed_at: row.get(11)?,
                     delivery_failure: row.get(12)?,
                     content: row.get(13)?,
+                    files: files_column(row, 23)?,
                     sent_by_self: row.get::<_, i64>(14)? != 0,
                     message_state: row.get(15)?,
                     height: row.get(16)?,
@@ -405,7 +417,7 @@ fn get_messages_by_ids_on(
         return Ok(Vec::new());
     }
     let ids = serde_json::to_string(ids).map_err(|error| StorageError::Other(error.to_string()))?;
-    let mut stmt = conn.prepare("SELECT id, relay_signer_id, relay_message_id, message_time, authored_at, origin_iota_received_at, destination_iota_received_at, client_received_at, client_received_recorded_at, read_at, read_recorded_at, delivery_failed_at, delivery_failure, content, sent_by_self, message_state, height, key_version, reply_to, edited_count, external_user, external_principal, relay_signer_principal FROM messages WHERE storage_owner = ?1 AND id IN (SELECT value FROM json_each(?2)) AND deleted_by_external = 0 AND history_deleted = 0 ORDER BY id ASC")?;
+    let mut stmt = conn.prepare("SELECT id, relay_signer_id, relay_message_id, message_time, authored_at, origin_iota_received_at, destination_iota_received_at, client_received_at, client_received_recorded_at, read_at, read_recorded_at, delivery_failed_at, delivery_failure, content, sent_by_self, message_state, height, key_version, reply_to, edited_count, external_user, external_principal, relay_signer_principal, files FROM messages WHERE storage_owner = ?1 AND id IN (SELECT value FROM json_each(?2)) AND deleted_by_external = 0 AND history_deleted = 0 ORDER BY id ASC")?;
     let rows = stmt.query_map(params![storage_owner, ids], |row| {
         let external_user: i64 = row.get(20)?;
         Ok(StoredMessage {
@@ -430,6 +442,7 @@ fn get_messages_by_ids_on(
             delivery_failed_at: row.get(11)?,
             delivery_failure: row.get(12)?,
             content: row.get(13)?,
+            files: files_column(row, 23)?,
             sent_by_self: row.get::<_, i64>(14)? != 0,
             message_state: row.get(15)?,
             height: row.get(16)?,

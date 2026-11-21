@@ -8,7 +8,7 @@ iota-paths = { path = "../iota-paths" }
 iota-state = { path = "../iota-state" }
 iota-util = { path = "../iota-util" }
 
-mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "eef7562be64e77d8c29ba5af6df7596073e3c9f2" }
+mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "d222dc19d38aa03f538ab167ca4e4a3b187b9320" }
 
 ratatui = "0.30.0"
 json = "0.12.4"

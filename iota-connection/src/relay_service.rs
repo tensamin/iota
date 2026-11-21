@@ -692,7 +692,11 @@ impl RelayService {
                     Ok(())
                 });
                 if let Err(error) = authorization {
-                    return Ok(storage_outcome(&verified.frame, &error));
+                    return Ok(storage_outcome(
+                        &verified.frame,
+                        &verified.message_id,
+                        &error,
+                    ));
                 }
             }
             return match proof.state {
@@ -718,6 +722,7 @@ impl RelayService {
                 }
                 relay_replay::RelayState::Rejected => Ok(response(
                     &verified.frame,
+                    &verified.message_id,
                     if proof.unauthorized {
                         CommunicationType::ErrorNotAuthenticated
                     } else {
@@ -744,18 +749,29 @@ impl RelayService {
         {
             return Ok(storage_outcome(
                 &verified.frame,
+                &verified.message_id,
                 &StorageError::RelayOwnerUnavailable,
             ));
         }
         let mut operation = match prepared_relay::prepare_application(&verified, sender, recipient)
         {
             Ok(operation) => operation,
-            Err(error) => return Ok(storage_outcome(&verified.frame, &error)),
+            Err(error) => {
+                return Ok(storage_outcome(
+                    &verified.frame,
+                    &verified.message_id,
+                    &error,
+                ));
+            }
         };
         if let Some(lease) = lease.as_ref()
             && let Err(error) = operation.bind_origin_lease(lease)
         {
-            return Ok(storage_outcome(&verified.frame, &error));
+            return Ok(storage_outcome(
+                &verified.frame,
+                &verified.message_id,
+                &error,
+            ));
         }
         if matches!(
             operation.operation,
@@ -806,7 +822,7 @@ impl RelayService {
         });
         let acquisition = match acquisition {
             Ok(result) => result,
-            Err(error) => return Ok(storage_outcome(&frame, &error)),
+            Err(error) => return Ok(storage_outcome(&frame, &operation.message_id, &error)),
         };
         match acquisition {
             relay_replay::AcquireResult::Claimed(claim) => {
@@ -823,7 +839,7 @@ impl RelayService {
                     if permanent(&error) {
                         reject_claim(&claim, &error)?;
                     }
-                    return Ok(storage_outcome(&frame, &error));
+                    return Ok(storage_outcome(&frame, &operation.message_id, &error));
                 }
                 relay_work::fault_point("after_application_commit", &claim.message_id);
                 if matches!(
@@ -884,6 +900,7 @@ impl RelayService {
                 let unauthorized = db::with_db(|conn| Ok(conn.query_row("SELECT COALESCE(rejection_reason = 'unauthorized', 0) FROM relay_inbox WHERE signer_principal = ?1 AND message_id = ?2", params![operation.signer.0, operation.message_id], |r| r.get::<_, bool>(0))?)).map_err(|error| RelayServiceError::Internal(error.to_string()))?;
                 Ok(response(
                     &frame,
+                    &operation.message_id,
                     if unauthorized {
                         CommunicationType::ErrorNotAuthenticated
                     } else {
@@ -891,9 +908,11 @@ impl RelayService {
                     },
                 ))
             }
-            relay_replay::AcquireResult::Collision => {
-                Ok(response(&frame, CommunicationType::ErrorInvalidData))
-            }
+            relay_replay::AcquireResult::Collision => Ok(response(
+                &frame,
+                &operation.message_id,
+                CommunicationType::ErrorInvalidData,
+            )),
         }
     }
 
@@ -1217,7 +1236,11 @@ fn reject_claim(
     }).map_err(|error| RelayServiceError::Internal(error.to_string()))
 }
 
-fn storage_outcome(frame: &CommunicationValue, error: &StorageError) -> RelayOutcome {
+fn storage_outcome(
+    frame: &CommunicationValue,
+    message_id: &str,
+    error: &StorageError,
+) -> RelayOutcome {
     iota_logger::log!("Relay application result: {error}");
     let kind = if matches!(
         error,
@@ -1229,14 +1252,14 @@ fn storage_outcome(frame: &CommunicationValue, error: &StorageError) -> RelayOut
     } else {
         CommunicationType::ErrorInternal
     };
-    response(frame, kind)
+    response(frame, message_id, kind)
 }
 
-fn response(frame: &CommunicationValue, kind: CommunicationType) -> RelayOutcome {
+fn response(frame: &CommunicationValue, message_id: &str, kind: CommunicationType) -> RelayOutcome {
     let (Some(_), Some(_)) = (frame.id(), frame.type_map()) else {
         return RelayOutcome::Ignored;
     };
-    let response = error_response(frame, kind);
+    let response = error_response(frame, Some(message_id), kind);
     if kind == CommunicationType::ErrorInternal {
         RelayOutcome::RetryLater { response }
     } else {
@@ -1252,6 +1275,7 @@ pub fn relay_error_response(
     iota_logger::log!("Relay ingress error: {error:?}");
     error_response(
         request,
+        None,
         match error {
             RelayServiceError::Rejected(_) => CommunicationType::ErrorInvalidData,
             RelayServiceError::Internal(_) => CommunicationType::ErrorInternal,
@@ -1259,7 +1283,11 @@ pub fn relay_error_response(
     )
 }
 
-fn error_response(frame: &CommunicationValue, kind: CommunicationType) -> CommunicationValue {
+fn error_response(
+    frame: &CommunicationValue,
+    message_id: Option<&str>,
+    kind: CommunicationType,
+) -> CommunicationValue {
     let mut response = match frame.type_map() {
         Some(map) => CommunicationValue::new_with_type_map(kind, map),
         None => CommunicationValue::new(kind),
@@ -1279,9 +1307,12 @@ fn error_response(frame: &CommunicationValue, kind: CommunicationType) -> Commun
         ),
     );
     // An echoed wire ID is correlation only. It never establishes a signer or a claim.
-    if let Ok(wire) = crate::federated_relay::parse_wire(frame) {
-        response =
-            response.add_typed_default(DataType::RelayMessageId, DataValue::Str(wire.message_id));
+    if let Some(id) = message_id.map(str::to_owned).or_else(|| {
+        crate::federated_relay::parse_wire(frame)
+            .ok()
+            .map(|wire| wire.message_id)
+    }) {
+        response = response.add_typed_default(DataType::RelayMessageId, DataValue::Str(id));
     }
     crate::connection_handler::bind_relay_response_identity(frame, response.clone())
         .unwrap_or(response)
@@ -1311,7 +1342,7 @@ fn success(
     )
     .add_typed_default(DataType::Status, DataValue::Str(status.into()));
     let response = crate::connection_handler::bind_relay_response_identity(frame, response)
-        .unwrap_or_else(|_| error_response(frame, CommunicationType::ErrorInternal));
+        .unwrap_or_else(|_| error_response(frame, None, CommunicationType::ErrorInternal));
     RelayOutcome::Accepted {
         ingress_response: response,
         local_deliveries,

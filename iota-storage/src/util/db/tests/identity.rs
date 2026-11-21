@@ -28,7 +28,7 @@ fn client_acknowledgement_uses_canonical_identity_and_rejects_ambiguity() -> Res
                 destination_id: 8,
                 frame,
                 frame_id: 42,
-                type_map_version: "1.0",
+                type_map_version: "0.4",
             },
             100,
         )?
@@ -49,7 +49,8 @@ fn client_acknowledgement_uses_canonical_identity_and_rejects_ambiguity() -> Res
                 external_user: signer_id as i64,
                 external_principal: claim.signer,
                 sent_by_self: false,
-                content: "ciphertext",
+                content: Some("ciphertext"),
+                files: &[],
                 height: 0,
                 key_version: 1,
                 reply_to: None,
@@ -73,7 +74,7 @@ fn client_acknowledgement_uses_canonical_identity_and_rejects_ambiguity() -> Res
         b"first",
         20,
         42,
-        "1.0",
+        "0.4",
     )?;
     assert_eq!(
         client_relay_delivery::acknowledge_client_delivery_in_tx(&tx, 8, 42)?,
@@ -125,7 +126,7 @@ fn client_acknowledgement_uses_canonical_identity_and_rejects_ambiguity() -> Res
             frame,
             20,
             42,
-            "1.0",
+            "0.4",
         )?;
     }
     assert!(matches!(
@@ -151,7 +152,7 @@ fn client_acknowledgement_uses_canonical_identity_and_rejects_ambiguity() -> Res
         b"missing",
         20,
         42,
-        "1.0",
+        "0.4",
     )?;
     assert!(matches!(
         client_relay_delivery::acknowledge_client_delivery_in_tx(&tx, 8, 42),

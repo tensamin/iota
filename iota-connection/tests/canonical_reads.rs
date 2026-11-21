@@ -140,7 +140,7 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
     )
     .unwrap();
     let owner_json = serde_json::to_string(&ids[0]).unwrap();
-    let map = mtp::codec::TypeMap::new(mtp::type_map::Version(1, 3));
+    let map = mtp::codec::TypeMap::new(mtp::type_map::Version(0, 4));
     let snapshot_request = tau::sync::encode_request(
         &tau::sync::Request::Snapshot {
             scope: tau::sync::Scope {
@@ -151,7 +151,7 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
                     .0
                     .auth_generation,
                 schema: tau::sync::SCHEMA.into(),
-                dictionary: tau_relay_protocol::dictionary_fingerprint("1.3").unwrap(),
+                dictionary: tau_relay_protocol::dictionary_fingerprint("0.4").unwrap(),
             },
             page: None,
             limit: 128,
@@ -418,8 +418,8 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
         message_id: "canonical-read".into(),
         operation_digest: recovery::operation_digest(format, &original_frame),
         original_frame,
-        original_type_map_version: "1.0".into(),
-        original_type_map_fingerprint: tau_relay_protocol::dictionary_fingerprint("1.0").unwrap(),
+        original_type_map_version: "0.4".into(),
+        original_type_map_fingerprint: tau_relay_protocol::dictionary_fingerprint("0.4").unwrap(),
         format,
         envelopes: pair.map(|owner| recovery::RecipientEnvelope {
             recipient_id: recovery::OriginalRecipientId::Principal(

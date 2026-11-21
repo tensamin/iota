@@ -211,7 +211,7 @@ fn federation_leases_pins_mailbox_and_transitions_are_durable_and_fenced() {
         sender: a.node_id().as_str().into(),
         id: vec![7; 32],
         frame: vec![1, 2, 3],
-        type_map_version: "1.0".into(),
+        type_map_version: "0.4".into(),
     };
     assert!(
         relay_mailbox::store(&envelope, &limits, now)

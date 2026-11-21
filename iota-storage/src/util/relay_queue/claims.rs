@@ -138,6 +138,7 @@ pub(super) fn claim_ready_in_tx(
     let deadline = now
         .checked_add(lease_duration)
         .ok_or_else(|| StorageError::Other("dispatch deadline exhausted".into()))?;
+
     // Prepared remote deliveries have a local sender effect. Inbound deliveries
     // target a local user, not another Iota. Numeric signer IDs are not ownership.
     // Key rotation preserves accepted work while the account remains enabled;
@@ -150,7 +151,10 @@ pub(super) fn claim_ready_in_tx(
              JOIN hosted_auth_state a ON a.local_user_id = u.user_id
              JOIN principals principal ON principal.principal_pk = h.principal_handle
              WHERE h.principal_handle = p.signer_principal AND r.lifecycle_state = 'managed'
-               AND a.enabled = 1 AND principal.retired_at IS NULL) ORDER BY p.id LIMIT 1",
+               AND a.enabled = 1 AND principal.retired_at IS NULL)
+         AND NOT EXISTS (SELECT 1 FROM pending_relays earlier WHERE earlier.target_kind = 2 AND earlier.delivery_state = 'ready'
+             AND earlier.signer_principal IS p.signer_principal AND earlier.destination_principal IS p.destination_principal AND earlier.id < p.id)
+         ORDER BY p.id LIMIT 1",
     )?;
     let mut claimed = Vec::new();
     while claimed.len() < limit.clamp(1, 500) as usize {
