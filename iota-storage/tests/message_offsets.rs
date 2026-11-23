@@ -46,7 +46,7 @@ fn message_offset_counts_visible_newer_messages_in_one_chat() {
             external_user,
             external_principal: PrincipalHandle(external_principal),
             sent_by_self: false,
-            content: Some(relay_message_id),
+            content: Some(relay_message_id.as_bytes()),
             files: &[],
             height: 0,
             key_version: 1,

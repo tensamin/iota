@@ -20,7 +20,7 @@ fn relay_message_value_rejects_missing_canonical_sender() {
         read_recorded_at: None,
         delivery_failed_at: None,
         delivery_failure: None,
-        content: Some("message".to_string()),
+        content: Some(b"message".to_vec()),
         files: Vec::new(),
         edited: false,
         sent_by_self: false,

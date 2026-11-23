@@ -315,7 +315,7 @@ async fn clean_daemons_introduce_resolve_deliver_and_restart_without_remote_key_
         CommunicationValue::new(CommunicationType::MessageSend)
             .add_typed_default(
                 DataType::Content,
-                DataValue::Str("backend encrypted content".into()),
+                DataValue::Bytes(b"backend encrypted content".to_vec()),
             )
             .add_typed_default(DataType::SendTime, DataValue::SignedNumber(1))
             .add_typed_default(DataType::VersionNumber, DataValue::SignedNumber(1)),

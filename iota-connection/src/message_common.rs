@@ -1,6 +1,5 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use iota_storage::util::chat_files::{FileStatus, MessageFile};
-use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
+use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue, EncodeLimits};
 use mtp::type_map::TypeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -76,7 +75,8 @@ pub fn chat_secret_recipients(cv: &CommunicationValue) -> Option<Vec<ChatSecretR
 
 pub const MAX_MESSAGE_FILES: usize = 32;
 
-pub const MAX_MESSAGE_BODY_BYTES: usize = 128 * 1024;
+/// Encoded MTP bytes of the opaque Content and Files fields, including their framing.
+pub const MAX_MESSAGE_BODY_BYTES: usize = 32 * 1024;
 
 fn file_status_name(status: FileStatus) -> &'static str {
     match status {
@@ -110,8 +110,10 @@ pub fn message_files(frame: &CommunicationValue) -> Option<Vec<MessageFile>> {
             {
                 return None;
             }
-            let reference = entry.get_field(content)?.as_str()?;
-            STANDARD.decode(reference).ok()?;
+            let reference = entry
+                .get_field(content)?
+                .as_bytes_slice()
+                .filter(|reference| !reference.is_empty())?;
             let status = match entry.get_field(status) {
                 None => None,
                 Some(value) => Some(match value.as_str()? {
@@ -122,24 +124,37 @@ pub fn message_files(frame: &CommunicationValue) -> Option<Vec<MessageFile>> {
                 }),
             };
             Some(MessageFile {
-                reference: reference.to_owned(),
+                reference: reference.to_vec(),
                 status,
             })
         })
         .collect()
 }
 
-pub fn message_body(frame: &CommunicationValue) -> Option<(Option<String>, Vec<MessageFile>)> {
+pub fn message_body(frame: &CommunicationValue) -> Option<(Option<Vec<u8>>, Vec<MessageFile>)> {
+    let map = frame.type_map()?;
+    let fields = [DataType::Content, DataType::Files]
+        .into_iter()
+        .filter_map(|kind| Some((kind.try_to_id(map)?, frame.get_data(kind)?.clone())))
+        .collect::<Vec<_>>();
+    DataValue::Container(fields)
+        .validate_with_limits(EncodeLimits {
+            max_output_size: MAX_MESSAGE_BODY_BYTES,
+            ..EncodeLimits::default()
+        })
+        .ok()?;
+
     let content = match frame.get_data(DataType::Content) {
-        Some(value) => Some(value.as_string()?),
+        Some(value) => Some(
+            value
+                .as_bytes_slice()
+                .filter(|bytes| !bytes.is_empty())?
+                .to_vec(),
+        ),
         None => None,
     };
     let files = message_files(frame)?;
-
-    let size = serde_json::to_string(&content).ok()?.len()
-        + files.iter().map(|file| file.reference.len()).sum::<usize>();
-    (size <= MAX_MESSAGE_BODY_BYTES && (content.is_some() || !files.is_empty()))
-        .then_some((content, files))
+    (content.is_some() || !files.is_empty()).then_some((content, files))
 }
 
 pub fn message_files_value(
@@ -149,7 +164,7 @@ pub fn message_files_value(
     files
         .iter()
         .map(|file| {
-            let mut fields = vec![(DataType::Content, DataValue::Str(file.reference.clone()))];
+            let mut fields = vec![(DataType::Content, DataValue::Bytes(file.reference.clone()))];
             if let Some(status) = file.status {
                 fields.push((
                     DataType::Status,
@@ -172,8 +187,36 @@ pub fn now_millis_i64() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::error_response;
-    use mtp::codec::{CommunicationType, CommunicationValue};
+    use super::{MAX_MESSAGE_BODY_BYTES, error_response, message_body};
+    use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
+
+    fn send(content: DataValue) -> CommunicationValue {
+        CommunicationValue::new(CommunicationType::MessageSend)
+            .add_typed_default(DataType::Content, content)
+    }
+
+    #[test]
+    fn message_body_limit_counts_encoded_binary_fields() {
+        let map = send(DataValue::Null).type_map().unwrap().clone();
+        let content_id = DataType::Content.try_to_id(&map).unwrap();
+        let overhead = DataValue::Container(vec![(content_id, DataValue::Bytes(Vec::new()))])
+            .to_bytes()
+            .unwrap()
+            .len();
+        let largest = MAX_MESSAGE_BODY_BYTES - overhead;
+
+        let (content, files) = message_body(&send(DataValue::Bytes(vec![7; largest]))).unwrap();
+        assert_eq!(content.unwrap().len(), largest);
+        assert!(files.is_empty());
+        assert!(message_body(&send(DataValue::Bytes(vec![7; largest + 1]))).is_none());
+    }
+
+    #[test]
+    fn message_body_rejects_text_and_empty_ciphertext() {
+        assert!(message_body(&send(DataValue::Str("Y2lwaGVy".into()))).is_none());
+        assert!(message_body(&send(DataValue::Bytes(Vec::new()))).is_none());
+        assert!(message_body(&CommunicationValue::new(CommunicationType::MessageSend)).is_none());
+    }
 
     #[test]
     fn error_response_preserves_an_absent_request_id() {

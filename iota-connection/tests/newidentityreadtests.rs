@@ -36,7 +36,10 @@ async fn snapshots_cover_accepted_edits_and_reactions_but_not_bootstrap_notifica
                     CommunicationValue::new(C::MessageEdit)
                         .add_typed_default(D::SendTime, DataValue::SignedNumber(100))
                         .add_typed_default(D::VersionNumber, DataValue::SignedNumber(1))
-                        .add_typed_default(D::Content, DataValue::Str(content.into())),
+                        .add_typed_default(
+                            D::Content,
+                            DataValue::Bytes(content.as_bytes().to_vec()),
+                        ),
                 )
                 .await,
         );
@@ -93,7 +96,10 @@ async fn snapshots_cover_accepted_edits_and_reactions_but_not_bootstrap_notifica
             .filter(|record| record.entity == tau::sync::Entity::Message)
             .collect::<Vec<_>>();
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].value["content"], "newest");
+        assert_eq!(
+            messages[0].value["content"],
+            serde_json::json!({"base64": "bmV3ZXN0"})
+        );
         assert_eq!(
             messages[0].value["relay_signer_principal_identity"],
             serde_json::to_value(&fixture.ids[0]).unwrap()

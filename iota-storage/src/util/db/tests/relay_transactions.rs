@@ -24,7 +24,7 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
                 external_user: external,
                 external_principal: PrincipalHandle(principal),
                 sent_by_self,
-                content: Some("original"),
+                content: Some(b"original"),
                 files: &[],
                 height: 0,
                 key_version: 1,
@@ -68,7 +68,7 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
     tx.rollback()?;
     assert_eq!(
         conn.query_row(
-            "SELECT count(*) FROM messages WHERE content = 'original' AND edited_count = 0",
+            "SELECT count(*) FROM messages WHERE content = CAST('original' AS BLOB) AND edited_count = 0",
             [],
             |row| row.get::<_, i64>(0)
         )?,
@@ -139,7 +139,7 @@ fn message_mutations_and_sync_events_use_the_callers_transaction() -> Result<(),
     tx.rollback()?;
     assert_eq!(
         conn.query_row(
-            "SELECT count(*) FROM messages WHERE content = 'original' AND deleted_by_external = 0",
+            "SELECT count(*) FROM messages WHERE content = CAST('original' AS BLOB) AND deleted_by_external = 0",
             [],
             |row| row.get::<_, i64>(0)
         )?,

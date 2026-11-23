@@ -41,14 +41,14 @@ pub use iota_identity::relay_protocol::application::{FileStatus, MessageFile, Me
 
 #[derive(Clone, Copy, Debug)]
 pub struct MessageBody<'a> {
-    pub content: Option<&'a str>,
+    pub content: Option<&'a [u8]>,
     pub files: &'a [MessageFile],
 }
 
 impl<'a> MessageBody<'a> {
     pub fn text(content: &'a str) -> Self {
         Self {
-            content: Some(content),
+            content: Some(content.as_bytes()),
             files: &[],
         }
     }
@@ -92,7 +92,7 @@ pub struct StoredMessage {
     pub read_recorded_at: Option<i64>,
     pub delivery_failed_at: Option<i64>,
     pub delivery_failure: Option<String>,
-    pub content: Option<String>,
+    pub content: Option<Vec<u8>>,
     pub files: Vec<MessageFile>,
     pub edited: bool,
     pub sent_by_self: bool,
@@ -113,7 +113,7 @@ pub struct NewMessage<'a> {
     pub external_user: i64,
     pub external_principal: iota_identity::PrincipalHandle,
     pub sent_by_self: bool,
-    pub content: Option<&'a str>,
+    pub content: Option<&'a [u8]>,
     pub files: &'a [MessageFile],
     pub height: i64,
     pub key_version: i64,

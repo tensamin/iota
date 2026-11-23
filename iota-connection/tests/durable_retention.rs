@@ -25,7 +25,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
         tx.execute("INSERT INTO hosted_auth_state(local_user_id,generation,enabled) VALUES(7,1,1) ON CONFLICT(local_user_id) DO NOTHING", [])?;
         tx.execute("INSERT INTO contacts(storage_owner,user_id,principal_handle,created_at,last_message_at) VALUES(7,8,102,0,20)", [])?;
         for (id, time, relay, signer, own) in [(1,10,"first",102,0), (2,20,"second",102,0), (3,30,"third",101,1)] {
-            tx.execute("INSERT INTO messages(id,storage_owner,external_user,external_principal,relay_signer_principal,relay_message_id,message_time,content,sent_by_self,message_state,key_version,stored_at) VALUES(?1,7,8,102,?4,?3,?2,'AQ==',?5,'received',1,0)", rusqlite::params![id,time,relay,signer,own])?;
+            tx.execute("INSERT INTO messages(id,storage_owner,external_user,external_principal,relay_signer_principal,relay_message_id,message_time,content,sent_by_self,message_state,key_version,stored_at) VALUES(?1,7,8,102,?4,?3,?2,X'01',?5,'received',1,0)", rusqlite::params![id,time,relay,signer,own])?;
             sync::record_event(tx, 7, sync::EntityType::Message, id, sync::Operation::Upsert)?;
         }
         Ok(())
@@ -70,7 +70,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
                 [id],
                 |row| {
                     Ok((
-                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<Vec<u8>>>(0)?,
                         row.get::<_, bool>(1)?,
                         row.get::<_, bool>(2)?,
                     ))
@@ -81,7 +81,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
     };
     assert_eq!(
         retained(1),
-        (Some("AQ==".into()), false, false),
+        (Some(vec![1]), false, false),
         "Issuing a page is not durable application acknowledgement"
     );
     chat_files::apply_remote_edit_for_principal(
@@ -108,7 +108,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
     assert_eq!(retained(1), (None, true, true));
     assert_eq!(
         retained(2),
-        (Some("Ag==".into()), false, false),
+        (Some(b"Ag==".to_vec()), false, false),
         "An edit newer than the saved page must survive"
     );
     assert_eq!(
@@ -143,7 +143,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
     .unwrap();
     assert_eq!(
         retained(1),
-        (Some("Aw==".into()), false, false),
+        (Some(b"Aw==".to_vec()), false, false),
         "A valid edit restores the current body after delivery pruning"
     );
     assert!(matches!(
@@ -155,7 +155,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
     ));
     assert_eq!(
         retained(1).0.as_deref(),
-        Some("Aw=="),
+        Some(&b"Aw=="[..]),
         "Replaying an old acknowledgement must not prune the new edit"
     );
     let Response::Delta {
@@ -341,7 +341,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
         "Explicit expiry still removes the retained copy through its deletion event"
     );
     db::with_immediate_transaction(|tx| {
-        tx.execute("INSERT INTO messages(id,storage_owner,external_user,external_principal,relay_signer_principal,relay_message_id,message_time,content,sent_by_self,message_state,key_version,stored_at) VALUES(4,7,8,102,102,'compacted',40,'BA==',0,'received',1,0)", [])?;
+        tx.execute("INSERT INTO messages(id,storage_owner,external_user,external_principal,relay_signer_principal,relay_message_id,message_time,content,sent_by_self,message_state,key_version,stored_at) VALUES(4,7,8,102,102,'compacted',40,X'04',0,'received',1,0)", [])?;
         sync::record_event(tx, 7, sync::EntityType::Message, 4, sync::Operation::Upsert)?;
         Ok(())
     }).unwrap();
@@ -397,7 +397,7 @@ fn only_durable_exact_versions_are_pruned_and_pruning_does_not_delete_the_client
     ));
     assert_eq!(
         retained(4),
-        (Some("BQ==".into()), false, false),
+        (Some(b"BQ==".to_vec()), false, false),
         "An old acknowledgement cannot prune an edit whose event was compacted"
     );
     let Response::Snapshot {

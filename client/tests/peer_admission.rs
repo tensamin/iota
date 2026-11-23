@@ -363,7 +363,7 @@ async fn gateway_fences_provisional_roles_expiry_renewal_and_inflight_revocation
         "inflight-revocation".into(),
         iota_storage::util::sync::now_millis() as u64,
         CommunicationValue::new(CommunicationType::MessageSend)
-            .add_typed_default(DataType::Content, DataValue::Str("ciphertext".into())),
+            .add_typed_default(DataType::Content, DataValue::Bytes(b"ciphertext".to_vec())),
         &sender,
         vec![
             local.public_keys(),

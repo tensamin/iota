@@ -393,7 +393,7 @@ fn parse_files(files: &str) -> Result<Vec<MessageFile>, StorageError> {
 
 struct StoredBody {
     id: i64,
-    content: Option<String>,
+    content: Option<Vec<u8>>,
     files: String,
     key_version: i64,
     history_deleted: bool,

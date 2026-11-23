@@ -381,7 +381,7 @@ pub fn accepted(outcome: RelayOutcome) {
 
 pub fn send(time: i64) -> CommunicationValue {
     CommunicationValue::new(CommunicationType::MessageSend)
-        .add_typed_default(DataType::Content, DataValue::Str("ciphertext".into()))
+        .add_typed_default(DataType::Content, DataValue::Bytes(b"ciphertext".to_vec()))
         .add_typed_default(DataType::SendTime, DataValue::SignedNumber(time.into()))
         .add_typed_default(DataType::VersionNumber, DataValue::SignedNumber(1))
 }

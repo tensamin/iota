@@ -619,7 +619,7 @@ async fn authenticated_peer_delivers_relay_to_same_numeric_user_on_another_iota(
     );
 
     let content = CommunicationValue::new(CommunicationType::MessageSend)
-        .add_typed_default(DataType::Content, DataValue::Str("ciphertext".into()))
+        .add_typed_default(DataType::Content, DataValue::Bytes(b"ciphertext".to_vec()))
         .add_typed_default(DataType::SendTime, DataValue::SignedNumber(10))
         .add_typed_default(DataType::VersionNumber, DataValue::SignedNumber(1));
     let frame = FederatedRelay::sign(
@@ -657,7 +657,7 @@ async fn authenticated_peer_delivers_relay_to_same_numeric_user_on_another_iota(
 
     let messages = chat_files::get_messages_for_principal(1, handle_a, 0, 10).unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].content.as_deref(), Some("ciphertext"));
+    assert_eq!(messages[0].content.as_deref(), Some(&b"ciphertext"[..]));
     {
         let delivered = deliveries.0.lock().unwrap();
         assert_eq!(delivered.len(), 1);
@@ -742,7 +742,7 @@ async fn authenticated_peer_delivers_relay_to_same_numeric_user_on_another_iota(
         "a-to-b-after-reconnect".into(),
         iota_storage::util::sync::now_millis() as u64,
         CommunicationValue::new(CommunicationType::MessageSend)
-            .add_typed_default(DataType::Content, DataValue::Str("second".into()))
+            .add_typed_default(DataType::Content, DataValue::Bytes(b"second".to_vec()))
             .add_typed_default(DataType::SendTime, DataValue::SignedNumber(11))
             .add_typed_default(DataType::VersionNumber, DataValue::SignedNumber(1)),
         &user_a,

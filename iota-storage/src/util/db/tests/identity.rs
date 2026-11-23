@@ -49,7 +49,7 @@ fn client_acknowledgement_uses_canonical_identity_and_rejects_ambiguity() -> Res
                 external_user: signer_id as i64,
                 external_principal: claim.signer,
                 sent_by_self: false,
-                content: Some("ciphertext"),
+                content: Some(b"ciphertext"),
                 files: &[],
                 height: 0,
                 key_version: 1,
@@ -276,7 +276,7 @@ fn equal_numeric_users_remain_separate_in_application_storage() -> Result<(), St
         )?;
 
     conn.execute(
-            "INSERT INTO messages (storage_owner, external_user, external_principal, relay_signer_id, relay_signer_principal, relay_message_id, message_time, content, sent_by_self, message_state) VALUES (1, 7, ?1, 7, ?1, 'first-message', 1, 'one', 0, 'sent')",
+            "INSERT INTO messages (storage_owner, external_user, external_principal, relay_signer_id, relay_signer_principal, relay_message_id, message_time, content, sent_by_self, message_state) VALUES (1, 7, ?1, 7, ?1, 'first-message', 1, CAST('one' AS BLOB), 0, 'sent')",
             [first],
         )?;
     let message = conn.last_insert_rowid();
@@ -327,7 +327,7 @@ fn observed_remote_references_receive_authority_scoped_principals() -> Result<()
         [],
     )?;
     conn.execute(
-            "INSERT INTO messages (storage_owner, external_user, message_time, content, sent_by_self, message_state) VALUES (1, 7, 1, 'message', 0, 'received')",
+            "INSERT INTO messages (storage_owner, external_user, message_time, content, sent_by_self, message_state) VALUES (1, 7, 1, CAST('message' AS BLOB), 0, 'received')",
             [],
         )?;
     let (contact_principal, message_principal, authority): (i64, i64, String) =
