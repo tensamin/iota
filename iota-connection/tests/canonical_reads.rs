@@ -127,7 +127,7 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
         tx.execute("INSERT INTO hosted_principals(local_user_id, principal_handle) VALUES(1, ?1)", [handles[0].0])?;
         for (index, handle) in handles.iter().enumerate().skip(1) {
             iota_storage::util::chats_util::add_conversation_in_tx(tx, 1, 7, *handle, None)?;
-            tx.execute("INSERT INTO messages(storage_owner, external_user, external_principal, message_time, content, sent_by_self, message_state, relay_signer_id) VALUES(1, 7, ?1, 100, ?2, 0, 'sent', 7)", rusqlite::params![handle.0, format!("peer{index}")])?;
+            tx.execute("INSERT INTO messages(storage_owner, external_user, external_principal, message_time, content, sent_by_self, message_state, relay_signer_id) VALUES(1, 7, ?1, 100, ?2, 0, 'sent', 7)", rusqlite::params![handle.0, format!("peer{index}").into_bytes()])?;
         }
         Ok(())
     }).unwrap();
@@ -292,7 +292,7 @@ async fn canonical_reads_bind_owner_aliases_secrets_and_node_keys() {
     // A keyed read must not decode unrelated rows, even for the same owner.
     db::with_db(|conn| {
         conn.execute(
-            "UPDATE messages SET content = x'ff' WHERE id = ?1",
+            "UPDATE messages SET content = 'not binary' WHERE id = ?1",
             [unrelated],
         )?;
         Ok(())

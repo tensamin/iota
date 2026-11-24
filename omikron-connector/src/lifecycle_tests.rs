@@ -743,7 +743,7 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
         );
         assert_eq!(
             relay_support::count(
-                "SELECT COUNT(*) FROM messages WHERE storage_owner = 2 AND relay_message_id = 'committed-before-blocked-local-sink' AND history_deleted = 0 AND content = 'ciphertext'"
+                "SELECT COUNT(*) FROM messages WHERE storage_owner = 2 AND relay_message_id = 'committed-before-blocked-local-sink' AND history_deleted = 0 AND content = CAST('ciphertext' AS BLOB)"
             ),
             1
         );
@@ -759,13 +759,13 @@ async fn committed_relay_survives_blocked_local_sink_and_cancelled_maintenance_r
     );
     assert_eq!(
         relay_support::count(
-            "SELECT COUNT(*) FROM messages WHERE storage_owner = 2 AND relay_message_id = 'committed-before-blocked-local-sink' AND history_deleted = 0 AND content = 'ciphertext'"
+            "SELECT COUNT(*) FROM messages WHERE storage_owner = 2 AND relay_message_id = 'committed-before-blocked-local-sink' AND history_deleted = 0 AND content = CAST('ciphertext' AS BLOB)"
         ),
         1
     );
     assert_eq!(
         relay_support::count(
-            "SELECT COUNT(*) FROM messages WHERE storage_owner = 1 AND relay_message_id = 'committed-before-blocked-local-sink' AND history_deleted = 0 AND content = 'ciphertext'"
+            "SELECT COUNT(*) FROM messages WHERE storage_owner = 1 AND relay_message_id = 'committed-before-blocked-local-sink' AND history_deleted = 0 AND content = CAST('ciphertext' AS BLOB)"
         ),
         1
     );

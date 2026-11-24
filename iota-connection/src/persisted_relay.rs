@@ -91,7 +91,8 @@ enum OperationV1 {
         revoke: tau_relay_protocol::files::ShareRevoke,
     },
     MessageSend {
-        content: Option<String>,
+        #[serde(with = "tau_relay_protocol::application::optional_base64_bytes")]
+        content: Option<Vec<u8>>,
         files: Vec<MessageFile>,
         send_time: i64,
         height: i64,
@@ -99,7 +100,8 @@ enum OperationV1 {
         reply_to: Option<i64>,
     },
     MessageEdit {
-        content: Option<String>,
+        #[serde(with = "tau_relay_protocol::application::optional_base64_bytes")]
+        content: Option<Vec<u8>>,
         files: Vec<MessageFile>,
         send_time: i64,
         version: i64,
@@ -833,7 +835,7 @@ mod tests {
             "created_at": 100, "accepted_at": 101, "frame": [1,2,3],
             "frame_id": 7, "type_map_version": "0.4",
             "type_map_fingerprint": tau_relay_protocol::dictionary_fingerprint("0.4").unwrap(),
-            "operation": {"MessageSend": {"content": "ciphertext", "files": [], "send_time": 100,
+            "operation": {"MessageSend": {"content": "Y2lwaGVydGV4dA==", "files": [], "send_time": 100,
                 "height": 0, "version": 1, "reply_to": null}},
             "effects": [{"owner": 5, "principal": 2, "sent_by_self": false}],
             "delivery": {"Local": 5}
@@ -938,7 +940,7 @@ mod tests {
     #[test]
     fn every_operation_has_an_independent_v1_representation() {
         let operations = [
-            json!({"MessageEdit":{"content":"new","files":[{"reference":"cmVm","status":"uploading"}],"send_time":100,"version":1}}),
+            json!({"MessageEdit":{"content":"bmV3","files":[{"reference":"cmVm","status":"uploading"}],"send_time":100,"version":1}}),
             json!({"MessageEdit":{"content":null,"files":[{"reference":"cmVm","status":null}],"send_time":100,"version":1}}),
             json!({"MessageFilesUpdate":{"files":[{"reference":"cmVm","status":"failed"}],"send_time":100}}),
             json!({"MessageReactionAdd":{"reaction":"+","send_time":100}}),

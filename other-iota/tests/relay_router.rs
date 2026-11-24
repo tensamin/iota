@@ -304,7 +304,7 @@ async fn authenticated_router_forwards_and_mailboxes_opaque_relays() {
         "through-router".into(),
         iota_storage::util::sync::now_millis() as u64,
         CommunicationValue::new(CommunicationType::MessageSend)
-            .add_typed_default(DataType::Content, DataValue::Str("opaque".into()))
+            .add_typed_default(DataType::Content, DataValue::Bytes(b"opaque".to_vec()))
             .add_typed_default(DataType::SendTime, DataValue::SignedNumber(10))
             .add_typed_default(DataType::VersionNumber, DataValue::SignedNumber(1)),
         &user_a,
@@ -374,7 +374,7 @@ async fn authenticated_router_forwards_and_mailboxes_opaque_relays() {
     );
     let messages = chat_files::get_messages_for_principal(1, handle_a, 0, 10).unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].content.as_deref(), Some("opaque"));
+    assert_eq!(messages[0].content.as_deref(), Some(&b"opaque"[..]));
     let delivered = deliveries.0.lock().unwrap();
     assert_eq!(delivered.len(), 1);
     assert_eq!(delivered[0].0, handle_b);

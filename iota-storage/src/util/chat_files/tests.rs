@@ -6,10 +6,10 @@ fn edit_fixture(conn: &Connection) -> Result<(), StorageError> {
     conn.execute_batch(
             "CREATE TABLE messages (id INTEGER PRIMARY KEY, storage_owner INTEGER,
                 external_user INTEGER, external_principal INTEGER, message_time INTEGER,
-                content TEXT, files TEXT NOT NULL DEFAULT '[]', sent_by_self INTEGER, history_deleted INTEGER DEFAULT 0,
+                content BLOB, files TEXT NOT NULL DEFAULT '[]', sent_by_self INTEGER, history_deleted INTEGER DEFAULT 0,
                 edited_count INTEGER DEFAULT 0, key_version INTEGER, delivery_pruned INTEGER DEFAULT 0, history_deleted_at INTEGER, deleted_by_external INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE message_edits (message_id INTEGER, content_before TEXT,
-                 content_after TEXT, files_before TEXT, files_after TEXT, edited_at INTEGER, edited_by INTEGER,
+             CREATE TABLE message_edits (message_id INTEGER, content_before BLOB,
+                 content_after BLOB, files_before TEXT, files_after TEXT, edited_at INTEGER, edited_by INTEGER,
                  content_before_key_version INTEGER, content_after_key_version INTEGER);
              CREATE TABLE sync_heads (user_id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
              CREATE TABLE sync_events (user_id INTEGER, version INTEGER, entity_type TEXT,
@@ -19,8 +19,8 @@ fn edit_fixture(conn: &Connection) -> Result<(), StorageError> {
                 wrapping_scheme TEXT, created_at INTEGER, updated_at INTEGER);
              INSERT INTO messages (id, storage_owner, external_user, external_principal,
                 message_time, content, sent_by_self, key_version)
-             VALUES (1, 7, 8, 71, 10, 'original', 1, 2),
-                    (2, 8, 7, 70, 10, 'original', 0, 2);
+             VALUES (1, 7, 8, 71, 10, CAST('original' AS BLOB), 1, 2),
+                    (2, 8, 7, 70, 10, CAST('original' AS BLOB), 0, 2);
              INSERT INTO chat_secrets VALUES
                 ('7', 'principal:70:71', 'chat:principal:70:71:main', 1, X'01', X'02', 'test', 0, 0),
                 ('7', 'principal:70:71', 'chat:principal:70:71:main', 2, X'03', X'04', 'test', 0, 0);",
@@ -30,7 +30,7 @@ fn edit_fixture(conn: &Connection) -> Result<(), StorageError> {
 
 fn edit_state(conn: &Connection) -> Result<(String, i64, i64, i64, i64), StorageError> {
     Ok(conn.query_row(
-        "SELECT content, key_version, edited_count,
+        "SELECT CAST(content AS TEXT), key_version, edited_count,
                 (SELECT count(*) FROM message_edits), (SELECT count(*) FROM sync_events)
              FROM messages WHERE id = 1",
         [],
@@ -99,7 +99,7 @@ fn edit_epochs_update_ciphertext_metadata_history_and_sync_together() -> Result<
     assert_eq!(edit_state(&conn)?, ("compatible edit".into(), 2, 3, 4, 4));
     assert_eq!(
         conn.query_row(
-            "SELECT content, key_version, edited_count FROM messages WHERE id = 2",
+            "SELECT CAST(content AS TEXT), key_version, edited_count FROM messages WHERE id = 2",
             [],
             |row| Ok((
                 row.get::<_, String>(0)?,
@@ -110,7 +110,7 @@ fn edit_epochs_update_ciphertext_metadata_history_and_sync_together() -> Result<
         ("old-key edit".into(), 1, 1)
     );
     let history: Vec<(String, String, i64)> = conn.prepare(
-            "SELECT content_before, content_after, edited_by FROM message_edits WHERE message_id = 1 ORDER BY rowid",
+            "SELECT CAST(content_before AS TEXT), CAST(content_after AS TEXT), edited_by FROM message_edits WHERE message_id = 1 ORDER BY rowid",
         )?.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<Result<_, _>>()?;
     assert_eq!(
@@ -164,7 +164,7 @@ fn edit_sync_failure_rolls_back_both_copies_and_can_retry() -> Result<(), Storag
     tx.rollback()?;
     assert_eq!(edit_state(&conn)?, before);
     assert_eq!(conn.query_row(
-            "SELECT count(*) FROM messages WHERE content = 'original' AND key_version = 2 AND edited_count = 0",
+            "SELECT count(*) FROM messages WHERE content = CAST('original' AS BLOB) AND key_version = 2 AND edited_count = 0",
             [], |row| row.get::<_, i64>(0),
         )?, 2);
     assert_eq!(
@@ -198,7 +198,7 @@ fn edit_sync_failure_rolls_back_both_copies_and_can_retry() -> Result<(), Storag
     tx.commit()?;
     assert_eq!(edit_state(&conn)?, ("edited".into(), 1, 1, 2, 2));
     assert_eq!(conn.query_row(
-            "SELECT count(*) FROM messages WHERE content = 'edited' AND key_version = 1 AND edited_count = 1",
+            "SELECT count(*) FROM messages WHERE content = CAST('edited' AS BLOB) AND key_version = 1 AND edited_count = 1",
             [], |row| row.get::<_, i64>(0),
         )?, 2);
     Ok(())
@@ -361,7 +361,7 @@ fn missing_edit_epoch_can_recover_after_reopen_without_partial_mutation() -> Res
 fn versioned_edit_does_not_restore_removed_history() -> Result<(), StorageError> {
     let mut conn = Connection::open_in_memory()?;
     edit_fixture(&conn)?;
-    conn.execute("UPDATE messages SET content = '', history_deleted = 1", [])?;
+    conn.execute("UPDATE messages SET content = X'', history_deleted = 1", [])?;
     let before = edit_state(&conn)?;
     let tx = conn.transaction()?;
     edit_message_for_principal_versioned_in_tx(

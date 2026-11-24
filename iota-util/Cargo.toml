@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 iota-paths = { path = "../iota-paths" }
 iota-identity = { path = "../iota-identity" }
-tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "a5efe246771ca176a50a1499e1fea352f0d95dec" }
+tau = { git = "https://github.com/TensaminDev/Tau.git", rev = "9adc8ed5096f77efab429c4d0a6ea50a7ff2dca8" }
 mtp = { git = "https://github.com/Nonanium/MTP.git", rev = "d222dc19d38aa03f538ab167ca4e4a3b187b9320", features = [
     "crypto"
 ] }

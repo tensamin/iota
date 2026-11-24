@@ -239,10 +239,12 @@ async fn local_operations() {
     let edit = V::new(C::MessageEdit)
         .add_typed_default(D::SendTime, W::SignedNumber(10))
         .add_typed_default(D::VersionNumber, W::SignedNumber(1))
-        .add_typed_default(D::Content, W::Str("edited".into()));
+        .add_typed_default(D::Content, W::Bytes(b"edited".to_vec()));
     accepted(f.accept(0, "edit", edit).await);
     assert_eq!(
-        count("SELECT count(*) FROM messages WHERE content = 'edited' AND edited_count = 1"),
+        count(
+            "SELECT count(*) FROM messages WHERE content = CAST('edited' AS BLOB) AND edited_count = 1"
+        ),
         2
     );
     for (id, kind, expected) in [

@@ -186,7 +186,7 @@ impl OmikronConnection {
         };
         let mut fields = vec![(DataType::Files, files_value)];
         if let Some(content) = &content {
-            fields.push((DataType::Content, DataValue::Str(content.clone())));
+            fields.push((DataType::Content, DataValue::Bytes(content.clone())));
         }
         let live =
             Self::mutation_live_message(CommunicationType::MessageEditLive, cv, &mutation, fields);

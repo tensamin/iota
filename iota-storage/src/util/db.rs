@@ -14,7 +14,7 @@ use crate::storage_error::StorageError;
 
 const DB_NAME: &str = "messages";
 // Only the current schema is supported; incompatible development stores must be recreated explicitly.
-const STORAGE_FORMAT: i64 = 0x49544F33;
+const STORAGE_FORMAT: i64 = 0x49544F34;
 
 /// A simple r2d2 manager for rusqlite connections.
 pub struct SqliteManager {

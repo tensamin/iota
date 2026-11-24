@@ -221,7 +221,7 @@ pub(super) fn stored_message_fields(
         fields.push((DataType::ErrorType, DataValue::Str(failure.clone())));
     }
     if let Some(content) = &message.content {
-        fields.push((DataType::Content, DataValue::Str(content.clone())));
+        fields.push((DataType::Content, DataValue::Bytes(content.clone())));
     }
     if message.edited {
         fields.push((DataType::Edited, DataValue::Bool(true)));
